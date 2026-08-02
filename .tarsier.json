@@ -1,0 +1,7 @@
+{
+  "port": 50460,
+  "origins": [
+    "http://localhost:*",
+    "http://127.0.0.1:*"
+  ]
+}

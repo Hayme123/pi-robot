@@ -1,0 +1,6 @@
+.pi-agent/
+node_modules/
+dist/
+projects/
+.env
+sessions/

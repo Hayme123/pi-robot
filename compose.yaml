@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PI_CODING_AGENT_DIR: /workspace/.pi-agent
+    volumes:
+      - ./projects:/workspace/projects
+      - ./.pi-agent:/workspace/.pi-agent
+    restart: unless-stopped
+
+  pi:
+    build: .
+    command: ["/app/node_modules/.bin/pi"]
+    working_dir: /workspace/projects
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PI_CODING_AGENT_DIR: /workspace/.pi-agent
+    volumes:
+      - ./projects:/workspace/projects
+      - ./.pi-agent:/workspace/.pi-agent
+    stdin_open: true
+    tty: true
