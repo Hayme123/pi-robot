@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -229,7 +229,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
         writeFailure = writeAngularStatus;
         await writeAngularStatus(projectDir, { status: "processing" });
-        await run("npm", ["install", "--include=dev"], { cwd: angularDir });
+        await prepareAngularDependencies(angularDir, request.log);
         const usage = await generatePromptProject(prompt.trim(), angularDir, request.log);
         await writeAngularStatus(projectDir, {
           status: "completed",
@@ -299,7 +299,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
         writeFailure = writeAngularStatus;
         await writeAngularStatus(projectDir, { status: "processing" });
-        await run("npm", ["install", "--include=dev"], { cwd: angularDir });
+        await prepareAngularDependencies(angularDir, request.log);
         const angular = await generateAngularProject(projectDir, angularDir, request.log);
         await writeAngularStatus(projectDir, {
           status: "completed",
@@ -440,12 +440,9 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
 
     await writeAngularStatus(projectDir, { status: "processing" });
-    request.log.info({ projectName }, "Installing Angular project dependencies");
-    void run("npm", ["install", "--include=dev"], { cwd: angularDir })
-      .then(() => {
-        request.log.info({ projectName }, "Angular project dependencies installed");
-        return generateAngularProject(projectDir, angularDir, request.log);
-      })
+    request.log.info({ projectName }, "Preparing Angular project dependencies");
+    void prepareAngularDependencies(angularDir, request.log)
+      .then(() => generateAngularProject(projectDir, angularDir, request.log))
       .then(async ({ cost, contextLength, contextWindow, contextPercent }) => {
         await writeAngularStatus(projectDir, {
           status: "completed",
@@ -802,6 +799,29 @@ async function extractScaffold(scaffoldDir: string, log: FastifyBaseLogger): Pro
   } finally {
     await rm(stagingDir, { recursive: true, force: true });
   }
+}
+
+async function prepareAngularDependencies(angularDir: string, log: FastifyBaseLogger): Promise<void> {
+  const nodeModules = path.join(angularDir, "node_modules");
+  const ng = path.join(nodeModules, ".bin", process.platform === "win32" ? "ng.cmd" : "ng");
+  try {
+    await access(ng);
+    log.info({ angularDir }, "Reusing existing Angular dependencies");
+    return;
+  } catch {
+    // Install or link dependencies below.
+  }
+
+  if (config.angularNodeModules) {
+    await access(path.join(config.angularNodeModules, ".bin", process.platform === "win32" ? "ng.cmd" : "ng"));
+    await rm(nodeModules, { recursive: true, force: true });
+    await symlink(config.angularNodeModules, nodeModules, process.platform === "win32" ? "junction" : "dir");
+    log.info({ angularDir, source: config.angularNodeModules }, "Linked shared Angular dependencies");
+    return;
+  }
+
+  log.info({ angularDir }, "Installing Angular dependencies");
+  await run("npm", ["install", "--include=dev", "--prefer-offline", "--no-audit", "--no-fund"], { cwd: angularDir });
 }
 
 /**

@@ -77,7 +77,7 @@ Request
           |
           v
 [3. ANGULAR]
-  |-- npm install in the extracted Angular workspace
+  |-- link the image-baked Angular node_modules into the workspace
   |-- combine extracted icons + default brand symbols
   |     `-> src/assets/icons/icons-sprite.svg
   |-- Pi session (high reasoning + angular-developer skill)
@@ -109,7 +109,7 @@ A failure stops the sequence and marks the active stage `failed`. Completed earl
 User prompt
     |
     v
-Pi names project -> extract Angular scaffold -> npm install
+Pi names project -> extract Angular scaffold -> link shared dependencies
     -> Pi builds Angular directly from prompt -> Prettier
     -> Angular dev server -> Cloudflare tunnel -> public URL
 
@@ -227,5 +227,7 @@ Host
 |  cloudflared child processes                                    |
 +----------------------------------------------------------------+
 ```
+
+The Docker image installs the scaffold lockfile once at `/opt/angular-deps`; generated projects symlink their `node_modules` to that immutable image directory. Existing per-project dependencies are reused, and non-Docker development falls back to a local npm install.
 
 Each Pi session receives a project-specific working directory, but this is not a security sandbox. Production isolation must place generated projects and agent execution behind filesystem, process, network, CPU, and memory limits.

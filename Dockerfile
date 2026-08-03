@@ -11,13 +11,22 @@ RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip
 COPY tsconfig.json ./
 COPY src ./src
 COPY scaffolds/frontend-scaffold.zip ./scaffolds/frontend-scaffold.zip
+RUN mkdir -p /opt/angular-deps \
+  && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/package.json > /opt/angular-deps/package.json \
+  && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/package-lock.json > /opt/angular-deps/package-lock.json \
+  && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/.npmrc > /opt/angular-deps/.npmrc \
+  && cd /opt/angular-deps \
+  && npm install --include=dev --no-audit --no-fund \
+  && test -x node_modules/.bin/ng \
+  && rm .npmrc
 RUN npm run build && npm prune --omit=dev
 
 ENV NODE_ENV=production \
     CHROME_BIN=/usr/bin/chromium \
     HOST=0.0.0.0 \
     PORT=3000 \
-    PROJECTS_ROOT=/workspace/projects
+    PROJECTS_ROOT=/workspace/projects \
+    ANGULAR_NODE_MODULES=/opt/angular-deps/node_modules
 
 EXPOSE 3000
 CMD ["npm", "start"]
