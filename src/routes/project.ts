@@ -1,19 +1,25 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 import { config } from "../config.js";
+import { authenticate } from "../services/auth.js";
 import { downloadFigmaFrames } from "../services/figma.js";
 import { applyProjectRevision, defineProjectName, generateAngularProject, generateProjectHtml, generatePromptProject } from "../services/pi.js";
 import {
-  publishProjectEvent,
-  subscribeProjectEvents,
+  createProject,
+  createRevisionJob,
+  getProject,
+  listProjects,
+  stopPreview,
+  updateJobStatus,
+  updatePreview,
   type ProjectStage,
-} from "../services/project-events.js";
+} from "../services/supabase.js";
 
 const run = promisify(execFile);
 
@@ -102,34 +108,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get<{ Params: { projectName: string } }>(
-    "/ws/projects/:projectName",
-    { websocket: true },
-    (socket, request) => {
-      const { projectName } = request.params;
-      if (!isProjectName(projectName)) {
-        socket.close(1008, "Invalid project name");
-        return;
-      }
-
-      const unsubscribe = subscribeProjectEvents(projectName, socket);
-      socket.once("close", unsubscribe);
-      void sendStatusSnapshot(projectName, socket, request.log);
-    },
-  );
-
-  app.get("/projects", async () => {
-    const projectNames = (await readdir(config.projectsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
-    return {
-      projects: await Promise.all(projectNames.map(async (projectName) => ({
-        project_name: projectName,
-        statuses: await readProjectStatuses(path.join(config.projectsRoot, projectName)),
-      }))),
-    };
-  });
+  app.get("/projects", async () => ({ projects: await listProjects() }));
 
   app.get<{ Params: { projectName: string } }>("/project/:projectName/download", async (request, reply) => {
     const { projectName } = request.params;
@@ -187,19 +166,11 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "project_name must be a folder name" });
     }
 
-    const projectDir = path.join(config.projectsRoot, projectName);
-    try {
-      await access(projectDir);
-      return { project_name: projectName, statuses: await readProjectStatuses(projectDir) };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return reply.code(404).send({ error: "Project not found" });
-      }
-      throw error;
-    }
+    const project = await getProject(projectName);
+    return project ?? reply.code(404).send({ error: "Project not found" });
   });
 
-  app.post<{ Body: PromptProjectBody }>("/project/prompt", { schema: promptProjectSchema }, async (request, reply) => {
+  app.post<{ Body: PromptProjectBody }>("/project/prompt", { schema: promptProjectSchema, preHandler: authenticate }, async (request, reply) => {
     const prompt = request.body?.prompt;
     if (typeof prompt !== "string" || !prompt.trim()) {
       return reply.code(400).send({ error: "prompt must be a non-empty string" });
@@ -220,6 +191,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       throw error;
     }
 
+    const { projectId, jobId } = await createProject(projectName, request.ownerId, { prompt: prompt.trim() });
     await writeSetupStatus(projectDir, { status: "processing" });
     void (async () => {
       let writeFailure = writeSetupStatus;
@@ -251,10 +223,10 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       }
     })();
 
-    return reply.code(202).send({ project_name: projectName, status: "processing" });
+    return reply.code(202).send(queuedResponse(projectName, projectId, jobId));
   });
 
-  app.post<{ Body: CreateProjectBody }>("/project/all", { schema: createProjectSchema }, async (request, reply) => {
+  app.post<{ Body: CreateProjectBody }>("/project/all", { schema: createProjectSchema, preHandler: authenticate }, async (request, reply) => {
     const projectName = request.body?.project_name;
 
     if (!isProjectName(projectName)) {
@@ -272,6 +244,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       throw error;
     }
 
+    const { projectId, jobId } = await createProject(projectName, request.ownerId, request.body as Record<string, unknown>);
     await writeSetupStatus(projectDir, { status: "processing" });
     void (async () => {
       let writeFailure = writeSetupStatus;
@@ -321,10 +294,10 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       }
     })();
 
-    return reply.code(202).send({ project_name: projectName, status: "processing" });
+    return reply.code(202).send(queuedResponse(projectName, projectId, jobId));
   });
 
-  app.post<{ Body: CreateProjectBody }>("/project", { schema: createProjectSchema }, async (request, reply) => {
+  app.post<{ Body: CreateProjectBody }>("/project", { schema: createProjectSchema, preHandler: authenticate }, async (request, reply) => {
     const projectName = request.body?.project_name;
 
     if (!isProjectName(projectName)) {
@@ -345,6 +318,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       throw error;
     }
 
+    const { projectId, jobId } = await createProject(projectName, request.ownerId, request.body as Record<string, unknown>);
     await writeSetupStatus(projectDir, { status: "processing" });
     void createProjectFiles(projectDir, scaffoldDir, String(request.body.file_key), request.body.node_ids ?? [], request.log)
       .then(async () => {
@@ -357,7 +331,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       });
 
     request.log.info({ projectName }, "Project creation queued");
-    return reply.code(202).send({ project_name: projectName, status: "processing" });
+    return reply.code(202).send(queuedResponse(projectName, projectId, jobId));
   });
 
   /**
@@ -367,7 +341,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
    * @param {import("fastify").FastifyReply} reply - Reply used to send the job status.
    * @returns {Promise<{ project_name: string, status: string }>} Accepted HTML generation job.
    */
-  app.post<{ Params: { projectName: string } }>("/project/:projectName/html", async (request, reply) => {
+  app.post<{ Params: { projectName: string } }>("/project/:projectName/html", { preHandler: authenticate }, async (request, reply) => {
     const { projectName } = request.params;
     if (!isProjectName(projectName)) {
       request.log.warn("Rejected HTML generation with an invalid project name");
@@ -418,7 +392,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
    * @param {import("fastify").FastifyReply} reply - Reply used to send the job status.
    * @returns {Promise<{ project_name: string, status: string }>} Accepted Angular generation job.
    */
-  app.post<{ Params: { projectName: string } }>("/project/:projectName/angular", async (request, reply) => {
+  app.post<{ Params: { projectName: string } }>("/project/:projectName/angular", { preHandler: authenticate }, async (request, reply) => {
     const { projectName } = request.params;
     if (!isProjectName(projectName)) {
       request.log.warn("Rejected Angular generation with an invalid project name");
@@ -461,7 +435,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(202).send({ project_name: projectName, status: "processing" });
   });
 
-  app.post<{ Params: { projectName: string }; Body: unknown }>("/project/:projectName/revisions", async (request, reply) => {
+  app.post<{ Params: { projectName: string }; Body: unknown }>("/project/:projectName/revisions", { preHandler: authenticate }, async (request, reply) => {
     const { projectName } = request.params;
     const revision = parseRevision(request.body);
     if (!isProjectName(projectName) || !revision) {
@@ -477,6 +451,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const revisionId = randomUUID();
+    const projectId = await createRevisionJob(projectName, revisionId, revision as unknown as Record<string, unknown>);
     const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
     await writeRevisionStatus(projectDir, { revision_id: revisionId, request: revision, status: "processing" });
 
@@ -528,10 +503,10 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       }
     })();
 
-    return reply.code(202).send({ revision_id: revisionId, status: "processing" });
+    return reply.code(202).send(queuedResponse(projectName, projectId, revisionId));
   });
 
-  app.post<{ Params: { projectName: string } }>("/project/:projectName/stop", async (request, reply) => {
+  app.post<{ Params: { projectName: string } }>("/project/:projectName/stop", { preHandler: authenticate }, async (request, reply) => {
     const { projectName } = request.params;
     if (!isProjectName(projectName)) {
       return reply.code(400).send({ error: "project_name must be a folder name" });
@@ -545,6 +520,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       tunnel.kill();
       angular.kill();
       runningProjects.delete(projectName);
+      await stopPreview(projectName);
       request.log.info({ projectName }, "Project tunnel stopped");
       return { project_name: projectName, status: "stopped" };
     } catch {
@@ -553,7 +529,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.post("/projects/run", async () => {
+  app.post("/projects/run", { preHandler: authenticate }, async (request) => {
     const projectNames = (await readdir(config.projectsRoot, { withFileTypes: true }))
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
@@ -587,7 +563,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     return { projects };
   });
 
-  app.post<{ Params: { projectName: string } }>("/project/:projectName/run", async (request, reply) => {
+  app.post<{ Params: { projectName: string } }>("/project/:projectName/run", { preHandler: authenticate }, async (request, reply) => {
     const { projectName } = request.params;
     if (!isProjectName(projectName)) {
       request.log.warn("Rejected project launch with an invalid project name");
@@ -829,73 +805,46 @@ async function prepareAngularDependencies(angularDir: string, log: FastifyBaseLo
 }
 
 /**
- * Writes the current background-project status to its project directory.
+ * Writes the current background-project status to its Supabase job.
  *
- * @param {string} projectDir - Project output directory.
+ * @param {string} projectDir - Project output directory, used to identify the project.
  * @param {{ status: "processing" | "completed" | "failed", cost?: number, context_length?: number | null, context_window?: number | null, context_percent?: number | null, output_html?: string, error?: string }} status - Status payload.
- * @returns {Promise<void>} Resolves after the status file is written.
+ * @returns {Promise<void>} Resolves after the job is updated.
  */
 async function writeSetupStatus(projectDir: string, status: JobStatus): Promise<void> {
-  await writeStatus(projectDir, "status_setup.json", "setup", status);
+  await writeStatus(projectDir, "setup", status);
 }
 
-/** Writes the current HTML-generation status to its project directory. */
+/** Writes the current HTML-generation status to Supabase. */
 async function writeHtmlStatus(projectDir: string, status: JobStatus): Promise<void> {
-  await writeStatus(projectDir, "status_html.json", "html", status);
+  await writeStatus(projectDir, "html", status);
 }
 
-/** Writes the current Angular-generation status to its project directory. */
+/** Writes the current Angular-generation status to Supabase. */
 async function writeAngularStatus(projectDir: string, status: JobStatus): Promise<void> {
-  await writeStatus(projectDir, "status_angular.json", "angular", status);
+  await writeStatus(projectDir, "angular", status);
 }
 
-/** Appends or updates one request in the project's revision history. */
+/** Updates one revision job in Supabase. */
 export async function writeRevisionStatus(
   projectDir: string,
   status: JobStatus & { revision_id: string; request: Revision },
 ): Promise<void> {
-  const statusPath = path.join(projectDir, "status_revision.json");
-  let requests: Record<string, unknown>[] = [];
-  try {
-    const saved = JSON.parse(await readFile(statusPath, "utf8")) as Record<string, unknown>;
-    if (Array.isArray(saved.request)) requests = saved.request.filter(isRecord);
-    else if (isRecord(saved.request) && typeof saved.revision_id === "string") {
-      const { request, ...legacyStatus } = saved;
-      requests = [{ ...request, ...legacyStatus }];
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
-
-  const { request, ...job } = status;
-  const updated_at = new Date().toISOString();
-  const entry = { ...request, ...job, updated_at };
-  const index = requests.findIndex((item) => item.revision_id === status.revision_id);
-  if (index === -1) requests.push(entry);
-  else requests[index] = entry;
-  await writeFile(statusPath, JSON.stringify({ request: requests }, null, 2));
-  publishProjectEvent({ type: "job.status", project_name: path.basename(projectDir), stage: "revision", ...job, updated_at });
+  const { request: _request, ...job } = status;
+  await writeStatus(projectDir, "revision", job);
 }
 
-/** Writes the current Angular-server status to its project directory. */
+/** Writes preview state to the project and its current job. */
 async function writeRunStatus(projectDir: string, status: JobStatus): Promise<void> {
-  await writeStatus(projectDir, "status_run.json", "run", status);
+  await Promise.all([
+    writeStatus(projectDir, "run", status),
+    updatePreview(path.basename(projectDir), status),
+  ]);
 }
 
-async function writeStatus(
-  projectDir: string,
-  fileName: string,
-  stage: ProjectStage,
-  status: JobStatus,
-): Promise<void> {
-  const savedStatus = { ...status, updated_at: new Date().toISOString() };
-  await writeFile(path.join(projectDir, fileName), JSON.stringify(savedStatus, null, 2));
-  publishProjectEvent({
-    type: "job.status",
-    project_name: path.basename(projectDir),
-    stage,
-    ...savedStatus,
-  });
+async function writeStatus(projectDir: string, stage: ProjectStage, status: JobStatus): Promise<void> {
+  const projectName = path.basename(projectDir);
+  await updateJobStatus(projectName, stage, status);
 }
 
 type AngularFile =
@@ -917,52 +866,6 @@ async function readAngularFiles(angularDir: string, currentDir = angularDir): Pr
     return { name: entry.name, path: relativePath, type: "file", content: content.toString("utf8") };
   }));
   return files.filter((file): file is AngularFile => file !== null);
-}
-
-const statusFiles: [ProjectStage, string][] = [
-  ["setup", "status_setup.json"],
-  ["html", "status_html.json"],
-  ["angular", "status_angular.json"],
-  ["revision", "status_revision.json"],
-  ["run", "status_run.json"],
-];
-
-async function readProjectStatuses(projectDir: string): Promise<Partial<Record<ProjectStage, (JobStatus & { updated_at: string }) | { request: Record<string, unknown>[] }>>> {
-  const statuses: Partial<Record<ProjectStage, (JobStatus & { updated_at: string }) | { request: Record<string, unknown>[] }>> = {};
-  await Promise.all(statusFiles.map(async ([stage, fileName]) => {
-    try {
-      statuses[stage] = JSON.parse(await readFile(path.join(projectDir, fileName), "utf8"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }));
-  return statuses;
-}
-
-async function sendStatusSnapshot(
-  projectName: string,
-  socket: { readyState: number; send(message: string): void },
-  log: FastifyBaseLogger,
-): Promise<void> {
-  const projectDir = path.join(config.projectsRoot, projectName);
-
-  await Promise.all(statusFiles.map(async ([stage, fileName]) => {
-    try {
-      const status = JSON.parse(await readFile(path.join(projectDir, fileName), "utf8")) as JobStatus & { updated_at: string; request?: Record<string, unknown>[] };
-      if (socket.readyState !== 1) return;
-      if (stage === "revision" && Array.isArray(status.request)) {
-        for (const entry of status.request) {
-          socket.send(JSON.stringify({ ...entry, type: "job.status", project_name: projectName, stage }));
-        }
-      } else {
-        socket.send(JSON.stringify({ ...status, type: "job.status", project_name: projectName, stage }));
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        log.warn({ error, projectName, fileName }, "Could not send project status snapshot");
-      }
-    }
-  }));
 }
 
 /**
@@ -1015,6 +918,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function queuedResponse(projectName: string, projectId: string, jobId: string) {
+  return {
+    project_id: projectId,
+    project_name: projectName,
+    job_id: jobId,
+    revision_id: jobId,
+    status: "queued",
+  };
 }
 
 export default projectRoutes;

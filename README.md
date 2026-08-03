@@ -54,7 +54,7 @@ curl -X POST http://localhost:3000/project/prompt \
 # {"project_name":"small-business-expenses","status":"processing"}
 ```
 
-Job states are written under `projects/<project-name>/`: `status_setup.json`, `status_html.json`, `status_angular.json`, and `status_run.json`.
+Project metadata, preview state, and job progress are stored in Supabase. Set `SUPABASE_SECRET_KEY` to a server-only secret key with write access to `projects` and `jobs`.
 
 Get all projects, or one project, with their available job statuses:
 
@@ -71,16 +71,6 @@ Get a project's Angular files as a directory tree. Generated dependencies/builds
 ```bash
 curl http://localhost:3000/project/landing-page/files
 # {"project_name":"landing-page","files":[{"name":"src","path":"src","type":"directory","children":[...]}]}
-```
-
-Subscribe to live status events (the current saved statuses are sent after connecting):
-
-```text
-ws://localhost:3000/ws/projects/landing-page
-```
-
-```json
-{"type":"job.status","project_name":"landing-page","stage":"html","status":"completed","updated_at":"2026-01-01T00:00:00.000Z"}
 ```
 
 Run a generated Angular project and expose it through a free temporary Cloudflare Quick Tunnel:

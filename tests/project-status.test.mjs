@@ -1,13 +1,36 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 const projectsRoot = await mkdtemp(path.join(tmpdir(), 'pi-projects-'));
 process.env.PROJECTS_ROOT = projectsRoot;
+process.env.SUPABASE_URL = 'http://supabase.test';
+process.env.SUPABASE_SECRET_KEY = 'test-secret';
+const setup = { status: 'completed', updated_at: '2026-01-01T00:00:00.000Z' };
+const html = { status: 'processing', updated_at: '2026-01-02T00:00:00.000Z' };
+const projectRows = [
+  {
+    id: 'alpha-id', name: 'alpha', preview_status: 'stopped', preview_base_url: null, preview_error: null, updated_at: '2026-01-02T00:00:00.000Z',
+    jobs: [{ id: 'alpha-job', kind: 'create', progress: { html }, created_at: '2026-01-02T00:00:00.000Z', updated_at: '2026-01-02T00:00:00.000Z' }],
+  },
+  {
+    id: 'demo-id', name: 'demo', preview_status: 'ready', preview_base_url: 'https://demo.test', preview_error: null, updated_at: '2026-01-01T00:02:00.000Z',
+    jobs: [
+      { id: 'demo-job', kind: 'create', progress: { setup }, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 'revision-1', kind: 'revision', request: { prompt: null, comments: [{ comment: 'Rename it' }] }, status: 'completed', summary: null, error: null, progress: { revision: { status: 'completed', cost: 0.25 } }, created_at: '2026-01-01T00:01:00.000Z', updated_at: '2026-01-01T00:01:00.000Z' },
+    ],
+  },
+];
+globalThis.fetch = async (input) => {
+  const url = new URL(String(input));
+  if (url.pathname !== '/rest/v1/projects') return new Response('not found', { status: 404 });
+  const name = url.searchParams.get('name')?.replace(/^eq\./, '');
+  return Response.json(name ? projectRows.filter((project) => project.name === name) : projectRows);
+};
 const { buildApp } = await import('../dist/app.js');
-const { requiresRevisionHtml, writeRevisionStatus } = await import('../dist/routes/project.js');
+const { requiresRevisionHtml } = await import('../dist/routes/project.js');
 
 test.after(() => rm(projectsRoot, { recursive: true, force: true }));
 
@@ -18,55 +41,30 @@ test('requires HTML before Angular for page, modal, and tab revisions', () => {
   assert.equal(requiresRevisionHtml('auto'), false);
 });
 
-test('gets a project with its available statuses', async () => {
-  const projectDir = path.join(projectsRoot, 'demo');
-  const setup = { status: 'completed', updated_at: '2026-01-01T00:00:00.000Z' };
-  const revision = {
-    request: [{
-      revision_id: 'revision-1',
-      prompt: null,
-      comments: [{ kind: 'element', comment: 'Rename it', target: { selector: 'h1' } }],
-      status: 'completed',
-      cost: 0.25,
-      updated_at: '2026-01-01T00:01:00.000Z',
-    }],
-  };
-  await mkdir(projectDir);
-  await writeFile(path.join(projectDir, 'status_setup.json'), JSON.stringify(setup));
-  await writeFile(path.join(projectDir, 'status_revision.json'), JSON.stringify(revision));
-
+test('maps Supabase project and job rows to the compatibility response', async () => {
   const app = buildApp();
   const response = await app.inject({ method: 'GET', url: '/project/demo' });
   await app.close();
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json(), { project_name: 'demo', statuses: { setup, revision } });
+  assert.equal(response.json().project_id, 'demo-id');
+  assert.deepEqual(response.json().statuses.setup, setup);
+  assert.deepEqual(response.json().statuses.revision.request[0], {
+    prompt: null,
+    comments: [{ comment: 'Rename it' }],
+    revision_id: 'revision-1',
+    status: 'completed',
+    cost: 0.25,
+    updated_at: '2026-01-01T00:01:00.000Z',
+  });
+  assert.deepEqual(response.json().statuses.run, {
+    status: 'completed',
+    url: 'https://demo.test',
+    updated_at: '2026-01-01T00:02:00.000Z',
+  });
 });
 
-test('appends revision requests and updates each request in place', async () => {
-  const projectDir = path.join(projectsRoot, 'revision-history');
-  const firstRequest = { prompt: null, comments: [{ comment: 'First' }] };
-  await mkdir(projectDir);
-  await writeRevisionStatus(projectDir, { revision_id: 'one', request: firstRequest, status: 'processing' });
-  await writeRevisionStatus(projectDir, { revision_id: 'one', request: firstRequest, status: 'completed', cost: 0.2, context_percent: 20, summary: 'Changed the heading color.' });
-  await writeRevisionStatus(projectDir, { revision_id: 'two', request: { prompt: 'Second', comments: [{ comment: 'Second' }] }, status: 'processing' });
-
-  const saved = JSON.parse(await readFile(path.join(projectDir, 'status_revision.json'), 'utf8'));
-  await rm(projectDir, { recursive: true });
-  assert.equal(saved.request.length, 2);
-  assert.deepEqual(saved.request.map(({ revision_id, status, cost, context_percent, summary }) => ({ revision_id, status, cost, context_percent, summary })), [
-    { revision_id: 'one', status: 'completed', cost: 0.2, context_percent: 20, summary: 'Changed the heading color.' },
-    { revision_id: 'two', status: 'processing', cost: undefined, context_percent: undefined, summary: undefined },
-  ]);
-});
-
-test('gets all project directories with their statuses', async () => {
-  const projectDir = path.join(projectsRoot, 'alpha');
-  const html = { status: 'processing', updated_at: '2026-01-02T00:00:00.000Z' };
-  await mkdir(projectDir);
-  await writeFile(path.join(projectDir, 'status_html.json'), JSON.stringify(html));
-  await writeFile(path.join(projectsRoot, 'not-a-project'), 'ignored');
-
+test('gets all projects and their mapped statuses from Supabase', async () => {
   const app = buildApp();
   const response = await app.inject({ method: 'GET', url: '/projects' });
   await app.close();
@@ -101,7 +99,7 @@ test('gets an Angular project source files', async () => {
   }]);
 });
 
-test('rejects a partially populated Figma page revision', async () => {
+test('requires authentication before validating a revision', async () => {
   const app = buildApp();
   const response = await app.inject({
     method: 'POST',
@@ -119,11 +117,11 @@ test('rejects a partially populated Figma page revision', async () => {
   });
   await app.close();
 
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.json(), { error: 'invalid_revision' });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.json(), { error: 'unauthorized' });
 });
 
-test('accepts a Figma frame with an explicit presentation', async () => {
+test('requires authentication for a Figma frame revision', async () => {
   const app = buildApp();
   const response = await app.inject({
     method: 'POST',
@@ -141,11 +139,11 @@ test('accepts a Figma frame with an explicit presentation', async () => {
   });
   await app.close();
 
-  assert.equal(response.statusCode, 404);
-  assert.deepEqual(response.json(), { error: 'Project not found' });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.json(), { error: 'unauthorized' });
 });
 
-test('defaults a missing revision thinking level to medium', async () => {
+test('requires authentication for revisions without a thinking level', async () => {
   const app = buildApp();
   const response = await app.inject({
     method: 'POST',
@@ -154,11 +152,11 @@ test('defaults a missing revision thinking level to medium', async () => {
   });
   await app.close();
 
-  assert.equal(response.statusCode, 404);
-  assert.deepEqual(response.json(), { error: 'Project not found' });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.json(), { error: 'unauthorized' });
 });
 
-test('rejects an unsupported revision thinking level', async () => {
+test('requires authentication before validating a thinking level', async () => {
   const app = buildApp();
   const response = await app.inject({
     method: 'POST',
@@ -167,17 +165,17 @@ test('rejects an unsupported revision thinking level', async () => {
   });
   await app.close();
 
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.json(), { error: 'invalid_revision' });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.json(), { error: 'unauthorized' });
 });
 
-test('rejects an empty prompt-only project request', async () => {
+test('requires authentication before validating a prompt-only project request', async () => {
   const app = buildApp();
   const response = await app.inject({ method: 'POST', url: '/project/prompt', payload: { prompt: '   ' } });
   await app.close();
 
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.json(), { error: 'prompt must be a non-empty string' });
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.json(), { error: 'unauthorized' });
 });
 
 test('returns 404 for an unknown project', async () => {
@@ -189,12 +187,11 @@ test('returns 404 for an unknown project', async () => {
   assert.deepEqual(response.json(), { error: 'Project not found' });
 });
 
-test('skips incomplete projects when launching all projects', async () => {
+test('requires authentication when launching all projects', async () => {
   const app = buildApp();
   const response = await app.inject({ method: 'POST', url: '/projects/run' });
   await app.close();
 
-  assert.equal(response.statusCode, 200);
-  assert.ok(response.json().projects.length > 0);
-  assert.ok(response.json().projects.every((project) => project.status === 'skipped'));
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(response.json(), { error: 'unauthorized' });
 });
