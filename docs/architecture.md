@@ -170,21 +170,7 @@ status_run.json (revision UUID + refreshed URL)
 
 ## Status and observability flow
 
-```text
-Background stage
-    |
-    +-- write status_<stage>.json
-    |      processing | completed | failed
-    |      timestamp, error, URL, model usage/cost as applicable
-    |
-    `-- publish in-memory event
-             |
-             v
-       WebSocket subscribers
-       /ws/projects/:projectName
-```
-
-A new WebSocket subscriber first receives snapshots from saved status files, then live in-memory events. `GET /projects` and `GET /project/:name` read the same files, so the filesystem is the source of truth across API restarts. Running process state and WebSocket subscriptions are in memory and do not survive restarts.
+Background stages update `jobs.stage`, `jobs.status`, and `jobs.progress`. Preview state is stored on `projects`. HTTP snapshots come from Supabase, and clients receive subsequent changes through Supabase Realtime.
 
 ## Project filesystem
 
