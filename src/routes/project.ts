@@ -482,20 +482,22 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
     void (async () => {
       try {
-        const figmaFrames = [] as { commentId: string | number; directory: string; htmlPath?: string }[];
-        let htmlCost = 0;
-        for (const [index, comment] of revision.comments.entries()) {
-          if (!comment.figma_frame) continue;
+        const frameResults = await Promise.all(revision.comments.map(async (comment, index) => {
+          if (!comment.figma_frame) return null;
           const directory = path.join(assetsDir, String(index));
           await downloadFigmaFrames(comment.figma_frame.project_id, [comment.figma_frame.node_id], directory, request.log);
-          let htmlPath: string | undefined;
-          if (requiresRevisionHtml(comment.interaction?.presentation)) {
-            const usage = await generateProjectHtml(directory, angularDir, request.log);
-            htmlCost += usage.cost;
-            htmlPath = path.join(directory, "index.html");
+          if (!requiresRevisionHtml(comment.interaction?.presentation)) {
+            return { frame: { commentId: comment.id ?? index, directory }, htmlCost: 0 };
           }
-          figmaFrames.push({ commentId: comment.id ?? index, directory, ...(htmlPath ? { htmlPath } : {}) });
-        }
+          const html = await generateProjectHtml(directory, angularDir, request.log);
+          return {
+            frame: { commentId: comment.id ?? index, directory, htmlPath: path.join(directory, "index.html") },
+            htmlCost: html.cost,
+          };
+        }));
+        const completedFrames = frameResults.filter((result) => result !== null);
+        const figmaFrames = completedFrames.map(({ frame }) => frame);
+        const htmlCost = completedFrames.reduce((total, result) => total + result.htmlCost, 0);
         const usage = await applyProjectRevision(angularDir, revision, figmaFrames, revision.thinking_level, request.log);
         await writeRevisionStatus(projectDir, {
           revision_id: revisionId,
@@ -785,8 +787,10 @@ async function createProjectFiles(
   nodeIds: string[],
   log: FastifyBaseLogger,
 ): Promise<void> {
-  await extractScaffold(scaffoldDir, log);
-  await downloadFigmaFrames(fileKey, nodeIds, projectDir, log);
+  await Promise.all([
+    extractScaffold(scaffoldDir, log),
+    downloadFigmaFrames(fileKey, nodeIds, projectDir, log),
+  ]);
 }
 
 async function extractScaffold(scaffoldDir: string, log: FastifyBaseLogger): Promise<void> {
