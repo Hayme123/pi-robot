@@ -153,9 +153,8 @@ Validate request and create revision UUID
   |     `-> download each frame into .revision-assets/<revision-id>/
   |
   v
-Pi agent session
-  |-- reuse recent project session when context usage <= 30%
-  |-- otherwise create a fresh session
+Fresh Pi agent session
+  |-- create a new session for every revision
   |-- apply comments to the existing Angular workspace
   `-- build and return a change summary
   |

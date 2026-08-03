@@ -129,9 +129,8 @@ export async function applyProjectRevision(
   thinkingLevel: "low" | "medium" | "high",
   log: FastifyBaseLogger,
 ): Promise<RevisionResult> {
-  const reuseRecent = !figmaFrames.some((frame) => frame.htmlPath);
-  log.info({ angularDir, thinkingLevel, reuseRecent }, "Starting project revision");
-  const session = await createProjectSession(angularDir, thinkingLevel, log, { reuseRecent });
+  log.info({ angularDir, thinkingLevel }, "Starting project revision");
+  const session = await createProjectSession(angularDir, thinkingLevel, log);
   const startingCost = getUsage(session).cost;
   try {
     await session.prompt([
@@ -157,14 +156,14 @@ export async function applyProjectRevision(
  *
  * @param {string} cwd - Agent working directory.
  * @param {"low" | "medium" | "high"} thinkingLevel - Reasoning level for the generation task.
- * @param {{ modelId?: string, reuseRecent?: boolean }} options - Session-specific options.
+ * @param {{ modelId?: string }} options - Session-specific options.
  * @returns {Promise<AgentSession>} Configured Pi session.
  */
 async function createProjectSession(
   cwd: string,
   thinkingLevel: "low" | "medium" | "high",
   log: FastifyBaseLogger,
-  { modelId = "gpt-5.6-luna", reuseRecent = false }: { modelId?: string; reuseRecent?: boolean } = {},
+  { modelId = "gpt-5.6-luna" }: { modelId?: string } = {},
 ): Promise<AgentSession> {
   log.debug({ cwd, thinkingLevel }, "Creating Pi session");
   const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir() });
@@ -184,15 +183,7 @@ async function createProjectSession(
     tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
   });
 
-  let { session } = await openSession(reuseRecent ? SessionManager.continueRecent(cwd) : SessionManager.create(cwd));
-  const contextPercent = getUsage(session).contextPercent;
-  if (reuseRecent && contextPercent !== null && contextPercent > 30) {
-    log.info({ cwd, contextPercent }, "Recent Pi session is over 30%; creating a new session");
-    session.dispose();
-    ({ session } = await openSession(SessionManager.create(cwd)));
-  } else if (reuseRecent) {
-    log.info({ cwd, contextPercent }, "Reusing recent Pi session");
-  }
+  const { session } = await openSession(SessionManager.create(cwd));
   return session;
 }
 
