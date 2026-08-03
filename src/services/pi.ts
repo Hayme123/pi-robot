@@ -32,7 +32,7 @@ export async function generateProjectHtml(projectDir: string, scaffoldDir: strin
   const designSpecPath = path.join(projectDir, "design_spec.json");
   const figma = JSON.parse(await readFile(path.join(projectDir, "frame_data_clean.json"), "utf8"));
   await writeFile(designSpecPath, JSON.stringify(createFigmaDesignSpec(figma), null, 2));
-  const session = await createProjectSession(scaffoldDir, "high", log, { reuseRecent: false });
+  const session = await createProjectSession(scaffoldDir, "medium", log);
   try {
     await session.prompt([
       "Use the html skill to generate the requested static interface. Create index.html and styles.css beside the requested output HTML. Do not create JavaScript.",
