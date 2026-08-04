@@ -1,4 +1,3 @@
-import websocket from "@fastify/websocket";
 import Fastify from "fastify";
 import healthRoutes from "./routes/health.js";
 import projectRoutes from "./routes/project.js";
@@ -22,7 +21,6 @@ export function buildApp() {
       },
     },
   });
-  app.register(websocket);
   app.register(healthRoutes);
   app.register(projectRoutes);
   return app;

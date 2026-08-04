@@ -1,49 +1,22 @@
 # System architecture
 
-The service is a filesystem-backed frontend generation pipeline. Fastify accepts work, Pi agents generate code, and Angular's development server is exposed through a temporary Cloudflare tunnel.
+The service is a filesystem-backed frontend generation pipeline. Fastify accepts work, Pi agents generate code, and Nginx exposes the API and Angular previews from Amazon Lightsail.
 
 ## Component diagram
 
 ```text
-                                      External services
-                         +---------------------------------------+
-                         | Figma API        Font Awesome API     |
-                         | OpenAI/Codex      Cloudflare Tunnel   |
-                         +----+----------------+--------------+--+
-                              |                |              |
-                              v                v              ^
-+-------------+ HTTP / WS +--------------------------------------------------+
-| API client  |---------->| Fastify API (api container, port 3000)            |
-| or frontend |<----------|                                                    |
-+-------------+           |  +------------------+   +-----------------------+ |
-                          |  | Project routes   |-->| Background pipeline   | |
-                          |  | health / files   |   | setup -> html ->      | |
-                          |  | status / zip     |   | angular -> run        | |
-                          |  | revisions / run  |   +-----------+-----------+ |
-                          |  +--------+---------+               |             |
-                          |           |                         v             |
-                          |  +--------v---------+   +-----------------------+ |
-                          |  | Status/event bus |   | Pi Coding Agent SDK   | |
-                          |  | JSON files + WS  |   | gpt-5.6-luna         | |
-                          |  +--------+---------+   | project-local skills  | |
-                          |           |             +-----------+-----------+ |
-                          |           v                         |             |
-                          |  /workspace/projects/<project>/     | edits       |
-                          |  +-------------------------------+  v             |
-                          |  | Figma assets, generated HTML  |                |
-                          |  | status_*.json                 |                |
-                          |  | <project>/ Angular workspace |                |
-                          |  +-------------------------------+                |
-                          |                     |                              |
-                          |                     v                              |
-                          |  Angular dev server (free local port)             |
-                          |                     |                              |
-                          |                     v                              |
-                          |  cloudflared --------------------------------------+
-                          +--------------------------------------------------+
-                                                |
-                                                v
-                                 https://*.trycloudflare.com
+External services: Figma, Font Awesome, OpenAI/Codex
+                         |
+                         v
+API client or frontend --HTTPS--> Nginx (Lightsail, ports 80/443)
+                                   |-- /api/* ----------------> Fastify :3000
+                                   `-- /previews/<port>/* ----> api:<port> (Angular)
+                                                                  |
+Fastify ----------------------------------------------------------+
+  |-- project routes and background orchestration
+  |-- Supabase status + Realtime
+  |-- R2 project artifacts
+  `-- Pi SDK + Angular build in the API container
 ```
 
 The Compose `pi` service uses the same image, projects volume, and `.pi-agent` volume to provide an interactive Pi CLI beside the API service.
@@ -88,12 +61,10 @@ Request
           |
           v
 [4. RUN]
-  |-- allocate a free loopback port
-  |-- start: ng serve --host 127.0.0.1 --allowed-hosts
+  |-- start Angular: ng serve --host 0.0.0.0 --port <4200-4299> --allowed-hosts
   |-- wait until any HTTP response proves readiness
-  |-- start Cloudflare Quick Tunnel to the Angular port
-  |-- capture https://*.trycloudflare.com
-  `-- status_run.json (public URL)
+  |-- publish /previews/<allocated-port>/ through Nginx
+  `-- status_run.json (stable HTTPS URL)
           |
           v
 Public Angular preview
@@ -111,7 +82,7 @@ User prompt
     v
 Pi names project -> extract Angular scaffold -> link shared dependencies
     -> Pi builds Angular directly from prompt -> Prettier
-    -> Angular dev server -> Cloudflare tunnel -> public URL
+    -> Angular preview process -> Nginx route -> public URL
 
 Status files: setup -> angular -> run
 Skipped stage: html (there is no Figma/HTML reference)
@@ -130,13 +101,13 @@ POST /project/:name/angular
     -> existing HTML + image + scaffold -> Angular
 
 POST /project/:name/run
-    -> existing installed Angular workspace -> public tunnel
+    -> existing installed Angular workspace -> Angular preview process -> Nginx
 
 POST /projects/run
     -> launch all installed Angular workspaces concurrently; isolate failures
 
 POST /project/:name/stop
-    -> terminate its Angular and cloudflared processes
+    -> terminate its Angular preview process
 ```
 
 These endpoints support manual orchestration of the same stages used by `/project/all`.
@@ -162,7 +133,7 @@ Fresh Pi agent session
 status_revision.json (revision history)
   |
   v
-restart Angular + Cloudflare processes
+restart Angular and refresh its Nginx URL
   |
   v
 status_run.json (revision UUID + refreshed URL)
@@ -170,21 +141,7 @@ status_run.json (revision UUID + refreshed URL)
 
 ## Status and observability flow
 
-```text
-Background stage
-    |
-    +-- write status_<stage>.json
-    |      processing | completed | failed
-    |      timestamp, error, URL, model usage/cost as applicable
-    |
-    `-- publish in-memory event
-             |
-             v
-       WebSocket subscribers
-       /ws/projects/:projectName
-```
-
-A new WebSocket subscriber first receives snapshots from saved status files, then live in-memory events. `GET /projects` and `GET /project/:name` read the same files, so the filesystem is the source of truth across API restarts. Running process state and WebSocket subscriptions are in memory and do not survive restarts.
+Background stages update `jobs.stage`, `jobs.status`, and `jobs.progress`. Preview state is stored on `projects`. HTTP snapshots come from Supabase, and clients receive subsequent changes through Supabase Realtime.
 
 ## Project filesystem
 
@@ -212,21 +169,24 @@ projects/
 
 `GET /project/:name/files` omits dependencies, build output, binary files, and `.env`. `GET /project/:name/download` streams a ZIP with the same generated/build directories excluded.
 
-## Deployment boundary
+## Planned Amazon Lightsail deployment boundary
 
 ```text
-Host
+Amazon Lightsail instance
 +----------------------------------------------------------------+
-| ./projects <---------- volume ----------> /workspace/projects   |
-| ./.pi-agent <--------- volume ----------> /workspace/.pi-agent  |
+| Docker Compose                                                  |
 |                                                                |
 |  api container                         pi container             |
-|  Fastify + Pi SDK                      interactive Pi CLI       |
-|  Angular child processes                                        |
-|  cloudflared child processes                                    |
+|  Fastify orchestration                 interactive Pi CLI       |
+|         |                                                      |
+|         +--> Pi generation in project-specific workspaces      |
+|         `--> Angular preview processes on ports 4200-4299      |
+|  nginx container: ingress for API and /previews/*               |
+|                                                                |
+|  temporary workspaces <--------------> R2 artifacts             |
 +----------------------------------------------------------------+
 ```
 
 The Docker image installs the scaffold lockfile once at `/opt/angular-deps`; generated projects symlink their `node_modules` to that immutable image directory. Existing per-project dependencies are reused, and non-Docker development falls back to a local npm install.
 
-Each Pi session receives a project-specific working directory, but this is not a security sandbox. Production isolation must place generated projects and agent execution behind filesystem, process, network, CPU, and memory limits.
+Each Pi session receives a project-specific working directory inside the API container, but jobs are not isolated from one another. Run the stack only on a dedicated Lightsail instance, expose only Nginx, require authentication for mutations, and never place host credentials in generated workspaces or R2 archives.

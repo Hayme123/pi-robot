@@ -1,98 +1,228 @@
 # SQL schema
 
-_Last inspected: 2026-07-28_
+Supabase stores project metadata and job state. Cloudflare R2 stores project files, and Supabase Realtime replaces the custom project WebSocket feed.
 
-## Connection
+## Data model
 
-The PostgreSQL 17.6 database is configured through `DATABASE_URL` in the local `.env`. The connection uses Supabase's transaction pooler with TLS. Credentials are intentionally omitted from this document.
+```text
+auth.users
+    |
+    `--- public.profiles
+             |
+             `--< public.projects
+                      |
+                      `--< public.jobs
+```
 
-## Application schema (`public`)
+Three application tables are required. Supabase manages authentication in `auth.users`; `public.profiles` stores application-facing user data.
 
-The `public` schema is currently empty:
+## `public.profiles`
 
-- No tables or views
-- No functions
-- No custom enum or domain types
-- No relationships or row-level security policies
+One row stores application profile data for one Supabase user. Profile rows are not publicly readable.
 
-There is therefore no application ER diagram yet.
+```sql
+create table public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  first_name text not null,
+  last_name text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
 
-## Supabase-managed schemas
+  check (btrim(first_name) <> ''),
+  check (btrim(last_name) <> '')
+);
+```
 
-These schemas belong to Supabase services and should normally be changed only through Supabase APIs or migrations supplied by Supabase.
+| Field | Purpose |
+| --- | --- |
+| `id` | The matching `auth.users.id`; no second user identifier is created. |
+| `first_name` | User's first name. |
+| `last_name` | User's last name. |
+| `created_at` | Profile creation time. |
+| `updated_at` | Last profile update. |
 
-### `auth`
+The signup flow must create this profile before the user creates a project.
 
-Authentication and authorization data:
+## `public.projects`
 
-- `audit_log_entries`
-- `custom_oauth_providers`
-- `flow_state`
-- `identities`
-- `instances`
-- `mfa_amr_claims`
-- `mfa_challenges`
-- `mfa_factors`
-- `oauth_authorizations`
-- `oauth_client_states`
-- `oauth_clients`
-- `oauth_consents`
-- `one_time_tokens`
-- `refresh_tokens`
-- `saml_providers`
-- `saml_relay_states`
-- `schema_migrations`
-- `sessions`
-- `sso_domains`
-- `sso_providers`
-- `users`
-- `webauthn_challenges`
-- `webauthn_credentials`
+One row represents one generated application.
 
-### `storage`
+```sql
+create table public.projects (
+  id uuid primary key default gen_random_uuid(),
+  owner_id uuid references public.profiles(id) on delete set null,
+  name text not null unique,
 
-Supabase Storage metadata:
+  current_artifact_prefix text,
 
-- `buckets`
-- `buckets_analytics`
-- `buckets_vectors`
-- `migrations`
-- `objects`
-- `s3_multipart_uploads`
-- `s3_multipart_uploads_parts`
-- `vector_indexes`
+  preview_status text not null default 'stopped'
+    check (preview_status in ('starting', 'ready', 'stopped', 'failed', 'expired')),
+  preview_base_url text,
+  preview_error text,
+  preview_expires_at timestamptz,
 
-### `realtime`
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+```
 
-Supabase Realtime infrastructure:
+| Field | Purpose |
+| --- | --- |
+| `id` | Stable project identifier used in relationships and R2 keys. |
+| `owner_id` | User who created the project. It is attribution, not a read-access boundary. |
+| `name` | User-facing project name, such as `landing-page`. |
+| `current_artifact_prefix` | R2 prefix containing the current project source and file manifest. |
+| `preview_status` | Current Lightsail preview state. |
+| `preview_base_url` | Active Nginx preview URL. |
+| `preview_error` | Latest preview failure message. |
+| `preview_expires_at` | Expected preview expiration. |
+| `created_at` | Project creation time. |
+| `updated_at` | Last project or preview update. |
 
-- `messages` (partitioned table)
-- `schema_migrations`
-- `subscription`
+## `public.jobs`
 
-### `vault`
+One row represents an initial generation or revision. Updating this row drives Supabase Realtime progress events.
 
-Encrypted secret storage:
+```sql
+create table public.jobs (
+  id uuid primary key default gen_random_uuid(),
+  project_id uuid not null references public.projects(id) on delete cascade,
 
-- `secrets`
-- `decrypted_secrets` (view)
+  kind text not null
+    check (kind in ('create', 'revision')),
+  stage text not null default 'setup'
+    check (stage in ('setup', 'html', 'angular', 'persist', 'preview')),
+  status text not null default 'queued'
+    check (status in ('queued', 'processing', 'completed', 'failed', 'cancelled')),
 
-### Other managed schemas
+  request jsonb,
+  progress jsonb not null default '{}'::jsonb,
+  artifact_prefix text,
+  summary text,
+  error text,
 
-- `extensions` — extension objects and PostgreSQL statistics views
-- `graphql` — GraphQL engine internals
-- `graphql_public` — public GraphQL API functions
+  created_at timestamptz not null default now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
 
-## Installed extensions
+create unique index one_active_job_per_project
+  on public.jobs (project_id)
+  where status in ('queued', 'processing');
 
-| Extension | Version | Schema |
-| --- | --- | --- |
-| `pg_stat_statements` | 1.11 | `extensions` |
-| `pgcrypto` | 1.3 | `extensions` |
-| `plpgsql` | 1.0 | `pg_catalog` |
-| `supabase_vault` | 0.3.1 | `vault` |
-| `uuid-ossp` | 1.1 | `extensions` |
+create index jobs_by_project_created_at
+  on public.jobs (project_id, created_at desc);
+```
 
-## Maintenance
+| Field | Purpose |
+| --- | --- |
+| `id` | Job identifier, also used to version R2 artifacts. |
+| `project_id` | Project being created or revised. |
+| `kind` | Initial `create` operation or later `revision`. |
+| `stage` | Current pipeline stage. |
+| `status` | Durable job state. |
+| `request` | Prompt, comments, Figma references, and thinking level. |
+| `progress` | Per-stage status, cost, and timestamp data used by the existing frontend stage cards. |
+| `artifact_prefix` | Immutable R2 output prefix produced by a successful job. |
+| `summary` | Pi's completion summary. |
+| `error` | Safe failure message. |
+| `created_at` | Request acceptance time. |
+| `started_at` | Processing start time. |
+| `completed_at` | Completion, failure, or cancellation time. |
+| `updated_at` | Last state change, used for Realtime ordering. |
 
-Update this document whenever an application migration changes the `public` schema. Do not commit the `.env` file or embed the database password in schema documentation.
+## R2 object layout
+
+R2 is the durable source of project files. Each project has one name-based prefix containing its latest complete folder archive and source manifest.
+
+```text
+projects/
+`-- <project-name>/
+    |-- workspace.zip
+    `-- files.json
+```
+
+The application derives object keys from `artifact_prefix`:
+
+```text
+<prefix>/workspace.zip
+<prefix>/files.json
+```
+
+`workspace.zip` contains the complete project folder, including Figma and revision assets, while excluding dependencies, builds, logs, and credentials. `projects.current_artifact_prefix` points to the active artifact set. Signed R2 URLs and credentials are never stored in these tables.
+
+## Job completion
+
+After the generated project folder is uploaded to R2, one database transaction must:
+
+1. Set `jobs.artifact_prefix`.
+2. Mark the job `completed` and set its completion timestamps.
+3. Set `projects.current_artifact_prefix` to the same prefix.
+4. Update `projects.updated_at`.
+
+If the R2 upload fails, the current project pointer remains unchanged and the job is marked `failed`.
+
+## Lightsail runtime lookup
+
+No runtime table is required. Generation runs in the API container, and Fastify tracks active Angular preview processes in memory. Supabase remains authoritative for project and job state.
+
+## Supabase Realtime
+
+Publish only the two tables that drive project status:
+
+```sql
+alter publication supabase_realtime add table public.projects;
+alter publication supabase_realtime add table public.jobs;
+```
+
+Clients subscribe to:
+
+- `jobs` for generation and revision progress.
+- `projects` for active artifact and preview changes.
+
+Postgres remains the durable state. Clients subscribe first, fetch the current snapshot after the channel reports `SUBSCRIBED`, and fetch again after reconnecting.
+
+## Row-level security
+
+Enable RLS on all application tables. Profiles remain private, but projects and jobs are publicly readable by anonymous and authenticated clients. Client writes are not allowed; the authenticated signup flow and Fastify write with server credentials.
+
+```sql
+alter table public.profiles enable row level security;
+alter table public.projects enable row level security;
+alter table public.jobs enable row level security;
+
+create policy "users can read their profile"
+on public.profiles
+for select
+to authenticated
+using (id = auth.uid());
+
+create policy "projects are publicly readable"
+on public.projects
+for select
+to anon, authenticated
+using (true);
+
+create policy "jobs are publicly readable"
+on public.jobs
+for select
+to anon, authenticated
+using (true);
+```
+
+## Removed state
+
+The database and Realtime feed replace:
+
+```text
+status_setup.json
+status_html.json
+status_angular.json
+status_revision.json
+status_run.json
+custom project WebSocket snapshots
+in-memory project event subscriptions
+```
+
+Projects are publicly readable, but the R2 bucket remains private. Fastify issues short-lived access URLs, and generated folders exclude credentials, so public access does not expose storage credentials.

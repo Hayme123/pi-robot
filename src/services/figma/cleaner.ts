@@ -27,7 +27,16 @@ export function cleanFigmaNode(node: Node): Json {
   return cleanNode(node, getFrameBounds(node), true) as Json;
 }
 
-/** Creates a validated, flat design specification from a cleaned Figma tree. */
+/**
+ * Creates a validated, flat design specification from a cleaned Figma tree.
+ *
+ * @param {Node} node - Cleaned Figma root node.
+ * @returns {Json} Flat design specification.
+ * @throws {Error} If the frame has no visible children, text, or bounds.
+ *
+ * @example
+ * const specification = createFigmaDesignSpec(cleanedFrame);
+ */
 export function createFigmaDesignSpec(node: Node): Json {
   const nodes: Record<string, Json>[] = [];
   let childCount = 0;

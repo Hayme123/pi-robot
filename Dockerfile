@@ -1,22 +1,22 @@
+# syntax=docker/dockerfile:1.7
 FROM node:24-bookworm
 
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip zip chromium curl \
-  && curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$(dpkg --print-architecture)" -o /usr/local/bin/cloudflared \
-  && chmod +x /usr/local/bin/cloudflared \
+RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip zip chromium \
   && rm -rf /var/lib/apt/lists/*
 
 COPY tsconfig.json ./
 COPY src ./src
 COPY scaffolds/frontend-scaffold.zip ./scaffolds/frontend-scaffold.zip
-RUN mkdir -p /opt/angular-deps \
+RUN --mount=type=secret,id=npm_token mkdir -p /opt/angular-deps \
   && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/package.json > /opt/angular-deps/package.json \
   && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/package-lock.json > /opt/angular-deps/package-lock.json \
   && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/.npmrc > /opt/angular-deps/.npmrc \
   && cd /opt/angular-deps \
-  && npm install --include=dev --no-audit --no-fund \
+  && export NPM_TOKEN="$(cat /run/secrets/npm_token)" \
+  && npm ci --include=dev --no-audit --no-fund \
   && test -x node_modules/.bin/ng \
   && rm .npmrc
 RUN npm run build && npm prune --omit=dev
