@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,12 +9,19 @@ import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 import { config } from "../config.js";
 import { authenticate } from "../services/auth.js";
 import { downloadFigmaFrames } from "../services/figma.js";
+import { getProjectDownloadUrl, getProjectFiles, persistProjectArtifact, restoreProjectWorkspace } from "../services/artifacts.js";
 import { applyProjectRevision, defineProjectName, generateAngularProject, generateProjectHtml, generatePromptProject } from "../services/pi.js";
+import { readProjectFiles } from "../services/project-files.js";
 import {
   createProject,
   createRevisionJob,
+  getArtifactJob,
   getProject,
   listProjects,
+  stopActivePreviews,
+  clearLocalExpiry,
+  getProjectExpiry,
+  renewLocalExpiry,
   stopPreview,
   updateJobStatus,
   updatePreview,
@@ -95,7 +102,9 @@ const promptProjectSchema = {
  */
 const projectRoutes: FastifyPluginAsync = async (app) => {
   await mkdir(config.projectsRoot, { recursive: true });
+  await stopActivePreviews();
   const runningProjects = new Map<string, Promise<RunningProject>>();
+  const activeProjects = new Set<string>();
 
   app.addHook("onClose", async () => {
     app.log.info({ runningProjects: runningProjects.size }, "Stopping project processes");
@@ -103,7 +112,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     for (const project of projects) {
       if (project.status === "fulfilled") {
         project.value.angular.kill();
-        project.value.tunnel.kill();
+        await project.value.restoreBaseHref();
       }
     }
   });
@@ -112,50 +121,24 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
   app.get<{ Params: { projectName: string } }>("/project/:projectName/download", async (request, reply) => {
     const { projectName } = request.params;
-    if (!isProjectName(projectName)) {
-      return reply.code(400).send({ error: "project_name must be a folder name" });
-    }
-
-    const angularDir = path.join(config.projectsRoot, projectName, projectName);
-    try {
-      await access(path.join(angularDir, "angular.json"));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return reply.code(404).send({ error: "Angular source not found" });
-      }
-      throw error;
-    }
-
-    const archive = spawn("zip", ["-qr", "-", ".", "-x", "node_modules/*", ".angular/*", "dist/*", ".env"], {
-      cwd: angularDir,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    await new Promise<void>((resolve, reject) => {
-      archive.once("spawn", resolve);
-      archive.once("error", reject);
-    });
-    archive.stderr?.on("data", (chunk) => request.log.warn({ output: String(chunk).trim() }, "Zip output"));
-    reply.raw.once("close", () => archive.kill());
-    return reply
-      .header("Content-Type", "application/zip")
-      .header("Content-Disposition", `attachment; filename="${projectName}.zip"`)
-      .send(archive.stdout);
+    if (!isProjectName(projectName)) return reply.code(400).send({ error: "project_name must be a folder name" });
+    const url = await getProjectDownloadUrl(projectName);
+    return url ? reply.redirect(url) : reply.code(404).send({ error: "Angular source not found" });
   });
 
   app.get<{ Params: { projectName: string } }>("/project/:projectName/files", async (request, reply) => {
     const { projectName } = request.params;
-    if (!isProjectName(projectName)) {
-      return reply.code(400).send({ error: "project_name must be a folder name" });
-    }
+    if (!isProjectName(projectName)) return reply.code(400).send({ error: "project_name must be a folder name" });
+    const files = await getProjectFiles(projectName);
+    if (files) return files;
 
+    // Compatibility fallback for projects not migrated to R2 yet.
     const angularDir = path.join(config.projectsRoot, projectName, projectName);
     try {
       await access(path.join(angularDir, "angular.json"));
-      return { project_name: projectName, files: await readAngularFiles(angularDir) };
+      return { project_name: projectName, files: await readProjectFiles(angularDir) };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return reply.code(404).send({ error: "Angular source not found" });
-      }
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return reply.code(404).send({ error: "Angular source not found" });
       throw error;
     }
   });
@@ -176,9 +159,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(400).send({ error: "prompt must be a non-empty string" });
     }
 
-    const existingNames = (await readdir(config.projectsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name);
+    const existingNames = (await listProjects()).map((project) => project.project_name);
     const projectName = await defineProjectName(prompt.trim(), config.projectsRoot, existingNames, request.log);
     const projectDir = path.join(config.projectsRoot, projectName);
     const angularDir = path.join(projectDir, projectName);
@@ -193,7 +174,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
     const { projectId, jobId } = await createProject(projectName, request.ownerId, { prompt: prompt.trim() });
     await writeSetupStatus(projectDir, { status: "processing" });
-    void (async () => {
+    runProjectTask(projectName, activeProjects, async () => {
       let writeFailure = writeSetupStatus;
       try {
         await extractScaffold(angularDir, request.log);
@@ -203,6 +184,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         await writeAngularStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
         const usage = await generatePromptProject(prompt.trim(), angularDir, request.log);
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost: usage.cost,
@@ -213,6 +195,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
         writeFailure = writeRunStatus;
         await writeRunStatus(projectDir, { status: "processing" });
+        await prepareAngularDependencies(angularDir, request.log);
         const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
         await writeRunStatus(projectDir, { status: "completed", url });
         app.log.info({ projectName, url }, "Prompt-generated project is publicly available");
@@ -221,7 +204,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         await writeFailure(projectDir, { status: "failed", error: message });
         app.log.error(error, `Prompt project generation failed: ${projectName}`);
       }
-    })();
+    });
 
     return reply.code(202).send(queuedResponse(projectName, projectId, jobId));
   });
@@ -246,7 +229,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
     const { projectId, jobId } = await createProject(projectName, request.ownerId, request.body as Record<string, unknown>);
     await writeSetupStatus(projectDir, { status: "processing" });
-    void (async () => {
+    runProjectTask(projectName, activeProjects, async () => {
       let writeFailure = writeSetupStatus;
       try {
         await createProjectFiles(
@@ -256,11 +239,13 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           request.body.node_ids ?? [],
           request.log,
         );
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeSetupStatus(projectDir, { status: "completed" });
 
         writeFailure = writeHtmlStatus;
         await writeHtmlStatus(projectDir, { status: "processing" });
         const html = await generateProjectHtml(projectDir, angularDir, request.log);
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeHtmlStatus(projectDir, {
           status: "completed",
           cost: html.cost,
@@ -274,6 +259,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         await writeAngularStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
         const angular = await generateAngularProject(projectDir, angularDir, request.log);
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost: angular.cost,
@@ -284,6 +270,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
         writeFailure = writeRunStatus;
         await writeRunStatus(projectDir, { status: "processing" });
+        await prepareAngularDependencies(angularDir, request.log);
         const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
         await writeRunStatus(projectDir, { status: "completed", url });
         app.log.info({ projectName, url }, "Full project pipeline completed");
@@ -292,7 +279,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         await writeFailure(projectDir, { status: "failed", error: message });
         app.log.error(error, `Full project pipeline failed: ${projectName}`);
       }
-    })();
+    });
 
     return reply.code(202).send(queuedResponse(projectName, projectId, jobId));
   });
@@ -320,15 +307,17 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
     const { projectId, jobId } = await createProject(projectName, request.ownerId, request.body as Record<string, unknown>);
     await writeSetupStatus(projectDir, { status: "processing" });
-    void createProjectFiles(projectDir, scaffoldDir, String(request.body.file_key), request.body.node_ids ?? [], request.log)
-      .then(async () => {
+    runProjectTask(projectName, activeProjects, async () => {
+      try {
+        await createProjectFiles(projectDir, scaffoldDir, String(request.body.file_key), request.body.node_ids ?? [], request.log);
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeSetupStatus(projectDir, { status: "completed" });
         request.log.info({ projectName }, "Project setup completed");
-      })
-      .catch(async (error) => {
+      } catch (error) {
         await writeSetupStatus(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         app.log.error(error, `Project setup failed: ${projectName}`);
-      });
+      }
+    });
 
     request.log.info({ projectName }, "Project creation queued");
     return reply.code(202).send(queuedResponse(projectName, projectId, jobId));
@@ -351,21 +340,32 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     request.log.info({ projectName }, "Starting HTML generation request");
     const projectDir = path.join(config.projectsRoot, projectName);
     const scaffoldDir = path.join(projectDir, projectName);
+    const htmlInputs = () => Promise.all([
+      access(path.join(projectDir, "frame_data_clean.json")),
+      access(path.join(projectDir, "frame.png")),
+      access(path.join(projectDir, "svg")),
+      access(scaffoldDir),
+    ]);
     try {
-      await Promise.all([
-        access(path.join(projectDir, "frame_data_clean.json")),
-        access(path.join(projectDir, "frame.png")),
-        access(path.join(projectDir, "svg")),
-        access(scaffoldDir),
-      ]);
+      await htmlInputs();
     } catch {
-      request.log.warn({ projectName }, "HTML generation inputs were not found");
-      return reply.code(404).send({ error: "Project setup or Figma reference files were not found" });
+      if (!(await restoreProjectWorkspace(projectName, config.projectsRoot))) {
+        request.log.warn({ projectName }, "HTML generation inputs were not found");
+        return reply.code(404).send({ error: "Project setup or Figma reference files were not found" });
+      }
+      try {
+        await htmlInputs();
+      } catch {
+        return reply.code(404).send({ error: "Project setup or Figma reference files were not found" });
+      }
     }
 
+    const { projectId, jobId } = await getArtifactJob(projectName);
     await writeHtmlStatus(projectDir, { status: "processing" });
-    void generateProjectHtml(projectDir, scaffoldDir, request.log)
-      .then(async ({ cost, contextLength, contextWindow, contextPercent }) => {
+    runProjectTask(projectName, activeProjects, async () => {
+      try {
+        const { cost, contextLength, contextWindow, contextPercent } = await generateProjectHtml(projectDir, scaffoldDir, request.log);
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeHtmlStatus(projectDir, {
           status: "completed",
           cost,
@@ -375,11 +375,11 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           output_html: "index.html",
         });
         request.log.info({ projectName, cost }, "HTML generation job completed");
-      })
-      .catch(async (error) => {
+      } catch (error) {
         await writeHtmlStatus(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         app.log.error(error, `HTML generation failed: ${projectName}`);
-      });
+      }
+    });
 
     request.log.info({ projectName }, "HTML generation queued");
     return reply.code(202).send({ project_name: projectName, status: "processing" });
@@ -402,22 +402,32 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     request.log.info({ projectName }, "Starting Angular generation request");
     const projectDir = path.join(config.projectsRoot, projectName);
     const angularDir = path.join(projectDir, projectName);
+    const angularInputs = () => Promise.all([
+      access(path.join(projectDir, "index.html")),
+      access(path.join(projectDir, "frame.png")),
+      access(angularDir),
+    ]);
     try {
-      await Promise.all([
-        access(path.join(projectDir, "index.html")),
-        access(path.join(projectDir, "frame.png")),
-        access(angularDir),
-      ]);
+      await angularInputs();
     } catch {
-      request.log.warn({ projectName }, "Angular generation inputs were not found");
-      return reply.code(404).send({ error: "Project HTML, image, or Angular scaffold was not found" });
+      if (!(await restoreProjectWorkspace(projectName, config.projectsRoot))) {
+        request.log.warn({ projectName }, "Angular generation inputs were not found");
+        return reply.code(404).send({ error: "Project HTML, image, or Angular scaffold was not found" });
+      }
+      try {
+        await angularInputs();
+      } catch {
+        return reply.code(404).send({ error: "Project HTML, image, or Angular scaffold was not found" });
+      }
     }
 
+    const { projectId, jobId } = await getArtifactJob(projectName);
     await writeAngularStatus(projectDir, { status: "processing" });
-    request.log.info({ projectName }, "Preparing Angular project dependencies");
-    void prepareAngularDependencies(angularDir, request.log)
-      .then(() => generateAngularProject(projectDir, angularDir, request.log))
-      .then(async ({ cost, contextLength, contextWindow, contextPercent }) => {
+    runProjectTask(projectName, activeProjects, async () => {
+      try {
+        await prepareAngularDependencies(angularDir, request.log);
+        const { cost, contextLength, contextWindow, contextPercent } = await generateAngularProject(projectDir, angularDir, request.log);
+        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost,
@@ -426,11 +436,11 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_percent: contextPercent,
         });
         request.log.info({ projectName, cost }, "Angular generation job completed");
-      })
-      .catch(async (error) => {
+      } catch (error) {
         await writeAngularStatus(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         app.log.error(error, `Angular generation failed: ${projectName}`);
-      });
+      }
+    });
     request.log.info({ projectName }, "Angular generation queued");
     return reply.code(202).send({ project_name: projectName, status: "processing" });
   });
@@ -447,7 +457,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     try {
       await access(path.join(angularDir, "angular.json"));
     } catch {
-      return reply.code(404).send({ error: "Project not found" });
+      if (!(await restoreProjectWorkspace(projectName, config.projectsRoot))) return reply.code(404).send({ error: "Project not found" });
     }
 
     const revisionId = randomUUID();
@@ -455,7 +465,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
     await writeRevisionStatus(projectDir, { revision_id: revisionId, request: revision, status: "processing" });
 
-    void (async () => {
+    runProjectTask(projectName, activeProjects, async () => {
       try {
         const frameResults = await Promise.all(revision.comments.map(async (comment, index) => {
           if (!comment.figma_frame) return null;
@@ -473,7 +483,9 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         const completedFrames = frameResults.filter((result) => result !== null);
         const figmaFrames = completedFrames.map(({ frame }) => frame);
         const htmlCost = completedFrames.reduce((total, result) => total + result.htmlCost, 0);
+        await prepareAngularDependencies(angularDir, request.log);
         const usage = await applyProjectRevision(angularDir, revision, figmaFrames, revision.thinking_level, request.log);
+        await persistProjectArtifact(projectName, revisionId, projectDir);
         await writeRevisionStatus(projectDir, {
           revision_id: revisionId,
           request: revision,
@@ -491,17 +503,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         return;
       }
 
-      await writeRunStatus(projectDir, { revision_id: revisionId, status: "processing" });
-      try {
-        const { url } = await restartRunningProject(projectName, angularDir, runningProjects, app.log);
-        await writeRunStatus(projectDir, { revision_id: revisionId, status: "completed", url });
-        app.log.info({ projectName, revisionId, url }, "Revised project is publicly available");
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await writeRunStatus(projectDir, { revision_id: revisionId, status: "failed", error: message });
-        app.log.error(error, `Revised project launch failed: ${projectName}`);
-      }
-    })();
+    });
 
     return reply.code(202).send(queuedResponse(projectName, projectId, revisionId));
   });
@@ -516,12 +518,12 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     if (!running) return reply.code(404).send({ error: "Project is not running" });
 
     try {
-      const { angular, tunnel } = await running;
-      tunnel.kill();
+      const { angular, restoreBaseHref } = await running;
       angular.kill();
+      await restoreBaseHref();
       runningProjects.delete(projectName);
       await stopPreview(projectName);
-      request.log.info({ projectName }, "Project tunnel stopped");
+      request.log.info({ projectName }, "Project preview stopped");
       return { project_name: projectName, status: "stopped" };
     } catch {
       runningProjects.delete(projectName);
@@ -530,22 +532,19 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/projects/run", { preHandler: authenticate }, async (request) => {
-    const projectNames = (await readdir(config.projectsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort();
+    const projectNames = (await listProjects()).map((project) => project.project_name);
 
     const projects = await Promise.all(projectNames.map(async (projectName) => {
       const projectDir = path.join(config.projectsRoot, projectName);
-      const angularDir = path.join(projectDir, projectName);
+      let angularDir = path.join(projectDir, projectName);
       try {
-        await Promise.all([
-          access(path.join(angularDir, "angular.json")),
-          access(path.join(angularDir, "node_modules", ".bin", process.platform === "win32" ? "ng.cmd" : "ng")),
-        ]);
+        await access(path.join(angularDir, "angular.json"));
       } catch {
-        return { project_name: projectName, status: "skipped", error: "Built Angular project was not found" };
+        const restored = await restoreProjectWorkspace(projectName, config.projectsRoot);
+        if (!restored) return { project_name: projectName, status: "skipped", error: "Built Angular project was not found" };
+        angularDir = restored;
       }
+      await prepareAngularDependencies(angularDir, request.log);
 
       await writeRunStatus(projectDir, { status: "processing" });
       try {
@@ -571,18 +570,21 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
 
     request.log.info({ projectName }, "Launching project");
-    const angularDir = path.join(config.projectsRoot, projectName, projectName);
+    let angularDir = path.join(config.projectsRoot, projectName, projectName);
     try {
-      await Promise.all([
-        access(path.join(angularDir, "angular.json")),
-        access(path.join(angularDir, "node_modules", ".bin", process.platform === "win32" ? "ng.cmd" : "ng")),
-      ]);
+      await access(path.join(angularDir, "angular.json"));
     } catch {
-      request.log.warn({ projectName }, "Built Angular project was not found");
-      return reply.code(404).send({ error: "Built Angular project was not found" });
+      const restored = await restoreProjectWorkspace(projectName, config.projectsRoot);
+      if (!restored) {
+        request.log.warn({ projectName }, "Built Angular project was not found");
+        return reply.code(404).send({ error: "Built Angular project was not found" });
+      }
+      angularDir = restored;
     }
+    await prepareAngularDependencies(angularDir, request.log);
 
     const projectDir = path.dirname(angularDir);
+    await renewLocalExpiry(projectName);
     await writeRunStatus(projectDir, { status: "processing" });
     try {
       const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
@@ -596,27 +598,63 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(500).send({ error: message });
     }
   });
+
+  app.post<{ Params: { projectName: string } }>("/internal/project/:projectName/expire-preview", async (request, reply) => {
+    if (!isCronRequest(request.headers["x-cron-secret"])) return reply.code(401).send({ error: "unauthorized" });
+    const project = await getProjectExpiry(request.params.projectName);
+    if (!project || !isDueThisHour(project.preview_expires_at)) return { status: "skipped" };
+    await stopTrackedPreview(request.params.projectName, runningProjects);
+    await stopPreview(request.params.projectName);
+    return { status: "stopped" };
+  });
+
+  app.post<{ Params: { projectName: string } }>("/internal/project/:projectName/expire-local", async (request, reply) => {
+    if (!isCronRequest(request.headers["x-cron-secret"])) return reply.code(401).send({ error: "unauthorized" });
+    const { projectName } = request.params;
+    const project = await getProjectExpiry(projectName);
+    if (!project || !isDueThisHour(project.local_expires_at)) return { status: "skipped" };
+    if (!project.current_artifact_prefix) return reply.code(409).send({ error: "project_has_no_r2_artifact" });
+    if (activeProjects.has(projectName)) return reply.code(409).send({ error: "project_is_active" });
+    await stopTrackedPreview(projectName, runningProjects);
+    await stopPreview(projectName);
+    const projectDir = path.join(config.projectsRoot, projectName);
+    try {
+      await access(path.join(projectDir, ".r2-synced"));
+    } catch {
+      return reply.code(409).send({ error: "project_is_not_r2_synced" });
+    }
+    await rm(projectDir, { recursive: true, force: true });
+    await clearLocalExpiry(projectName);
+    return { status: "deleted" };
+  });
 };
 
-type RunningProject = { angular: ChildProcess; tunnel: ChildProcess; url: string };
-
-async function restartRunningProject(
-  projectName: string,
-  angularDir: string,
-  runningProjects: Map<string, Promise<RunningProject>>,
-  log: FastifyBaseLogger,
-): Promise<RunningProject> {
-  const running = runningProjects.get(projectName);
-  runningProjects.delete(projectName);
-  if (running) {
-    try {
-      const { angular, tunnel } = await running;
-      tunnel.kill();
-      angular.kill();
-    } catch {}
-  }
-  return ensureRunningProject(projectName, angularDir, runningProjects, log);
+function isCronRequest(secret: string | string[] | undefined): boolean {
+  return typeof secret === "string" && Boolean(config.expiryCronSecret) && secret === config.expiryCronSecret;
 }
+
+function isDueThisHour(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const expiry = new Date(value);
+  const now = new Date();
+  return !Number.isNaN(expiry.valueOf()) && expiry <= new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(), 59, 59, 999));
+}
+
+async function stopTrackedPreview(projectName: string, runningProjects: Map<string, Promise<RunningProject>>): Promise<void> {
+  const running = runningProjects.get(projectName);
+  if (!running) return;
+  runningProjects.delete(projectName);
+  const { angular, restoreBaseHref } = await running;
+  angular.kill();
+  await restoreBaseHref();
+}
+
+function runProjectTask(projectName: string, activeProjects: Set<string>, task: () => Promise<void>): void {
+  activeProjects.add(projectName);
+  void task().finally(() => activeProjects.delete(projectName));
+}
+
+type RunningProject = { angular: ChildProcess; url: string; restoreBaseHref: () => Promise<void> };
 
 function ensureRunningProject(
   projectName: string,
@@ -627,64 +665,61 @@ function ensureRunningProject(
   let running = runningProjects.get(projectName);
   if (running) return running;
 
-  running = startAngularTunnel(angularDir, log);
+  running = startAngularPreview(angularDir, log);
   runningProjects.set(projectName, running);
   const current = running;
   const forget = () => runningProjects.get(projectName) === current && runningProjects.delete(projectName);
   void current
-    .then(({ angular, tunnel }) => {
-      angular.once("exit", (code, signal) => {
-        log.warn({ projectName, code, signal }, "Angular process stopped");
-        tunnel.kill();
-        forget();
-      });
-      tunnel.once("exit", (code, signal) => {
-        log.warn({ projectName, code, signal }, "Cloudflare tunnel stopped");
-        angular.kill();
-        forget();
-      });
-    })
+    .then(({ angular }) => angular.once("exit", (code, signal) => {
+      log.warn({ projectName, code, signal }, "Angular process stopped");
+      forget();
+    }))
     .catch(forget);
   return running;
 }
 
-async function startAngularTunnel(angularDir: string, log: FastifyBaseLogger): Promise<RunningProject> {
-  const port = await getFreePort();
+async function startAngularPreview(angularDir: string, log: FastifyBaseLogger): Promise<RunningProject> {
+  const port = await getFreePreviewPort();
   log.info({ angularDir, port }, "Starting Angular development server");
   const ng = path.join(angularDir, "node_modules", ".bin", process.platform === "win32" ? "ng.cmd" : "ng");
-  const angular = spawn(ng, ["serve", "--host", "127.0.0.1", "--port", String(port), "--allowed-hosts"], { cwd: angularDir });
+  const restoreBaseHref = await setPreviewBaseHref(angularDir, port);
+  const angular = spawn(ng, ["serve", "--host", "0.0.0.0", "--port", String(port), "--allowed-hosts", "--poll", "1000"], { cwd: angularDir });
   angular.stdout?.on("data", (chunk) => log.debug({ output: String(chunk).trim() }, "Angular output"));
   angular.stderr?.on("data", (chunk) => log.debug({ output: String(chunk).trim() }, "Angular error output"));
 
   try {
     await waitForUrl(`http://127.0.0.1:${port}`, angular, 120_000);
-    log.info({ port }, "Angular development server is ready");
-    const tunnel = spawn("cloudflared", [
-      "tunnel",
-      "--no-autoupdate",
-      "--url",
-      `http://127.0.0.1:${port}`,
-      "--http-host-header",
-      `127.0.0.1:${port}`,
-    ]);
-    const url = await waitForTunnelUrl(tunnel, 30_000, log);
-    log.info({ url }, "Cloudflare tunnel is ready");
-    return { angular, tunnel, url };
+    const url = new URL(`/previews/${port}/`, config.publicBaseUrl).toString();
+    log.info({ port, url }, "Angular preview is ready behind Nginx");
+    return { angular, url, restoreBaseHref };
   } catch (error) {
     angular.kill();
+    await restoreBaseHref();
     throw error;
   }
 }
 
-async function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      server.close(() => typeof address === "object" && address ? resolve(address.port) : reject(new Error("No free port")));
+async function setPreviewBaseHref(angularDir: string, port: number): Promise<() => Promise<void>> {
+  const angularJson = path.join(angularDir, "angular.json");
+  const original = await readFile(angularJson, "utf8");
+  const workspace = JSON.parse(original) as { projects: Record<string, { architect: { build: { options: Record<string, unknown> } } }> };
+  const project = Object.values(workspace.projects)[0];
+  if (!project) throw new Error("Angular workspace has no project");
+  project.architect.build.options.baseHref = `/previews/${port}/`;
+  await writeFile(angularJson, `${JSON.stringify(workspace, null, 2)}\n`);
+  return () => writeFile(angularJson, original);
+}
+
+async function getFreePreviewPort(): Promise<number> {
+  for (let port = 4200; port <= 4299; port++) {
+    const available = await new Promise<boolean>((resolve) => {
+      const server = createServer();
+      server.once("error", () => resolve(false));
+      server.listen(port, "0.0.0.0", () => server.close(() => resolve(true)));
     });
-  });
+    if (available) return port;
+  }
+  throw new Error("No preview port is available");
 }
 
 async function waitForUrl(url: string, process: ChildProcess, timeoutMs: number): Promise<void> {
@@ -706,41 +741,6 @@ async function waitForUrl(url: string, process: ChildProcess, timeoutMs: number)
   } finally {
     process.off("error", onError);
   }
-}
-
-function waitForTunnelUrl(
-  tunnel: ChildProcess,
-  timeoutMs: number,
-  log: FastifyBaseLogger,
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => finish(new Error("Cloudflare tunnel did not return a URL in time")), timeoutMs);
-    let output = "";
-    const finish = (error?: Error, url?: string) => {
-      clearTimeout(timeout);
-      tunnel.stderr?.off("data", onData);
-      tunnel.off("error", onError);
-      tunnel.off("exit", onExit);
-      if (error) {
-        tunnel.kill();
-        reject(error);
-      } else {
-        resolve(url!);
-      }
-    };
-    const onData = (chunk: Buffer) => {
-      const text = String(chunk);
-      output += text;
-      log.debug({ output: text.trim() }, "Cloudflare output");
-      const url = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)?.[0];
-      if (url) finish(undefined, url);
-    };
-    const onError = (error: Error) => finish(error);
-    const onExit = (code: number | null) => finish(new Error(`Cloudflare tunnel stopped with code ${code}`));
-    tunnel.stderr?.on("data", onData);
-    tunnel.once("error", onError);
-    tunnel.once("exit", onExit);
-  });
 }
 
 /**
@@ -847,27 +847,6 @@ async function writeStatus(projectDir: string, stage: ProjectStage, status: JobS
   await updateJobStatus(projectName, stage, status);
 }
 
-type AngularFile =
-  | { name: string; path: string; type: "directory"; children: AngularFile[] }
-  | { name: string; path: string; type: "file"; content: string };
-
-async function readAngularFiles(angularDir: string, currentDir = angularDir): Promise<AngularFile[]> {
-  const entries = await readdir(currentDir, { withFileTypes: true });
-  const files = await Promise.all(entries.map(async (entry): Promise<AngularFile | null> => {
-    if ([".angular", "dist", "node_modules"].includes(entry.name) || entry.name === ".env") return null;
-    const filePath = path.join(currentDir, entry.name);
-    const relativePath = path.relative(angularDir, filePath).split(path.sep).join("/");
-    if (entry.isDirectory()) {
-      return { name: entry.name, path: relativePath, type: "directory", children: await readAngularFiles(angularDir, filePath) };
-    }
-    if (!entry.isFile()) return null;
-    const content = await readFile(filePath);
-    if (content.includes(0)) return null;
-    return { name: entry.name, path: relativePath, type: "file", content: content.toString("utf8") };
-  }));
-  return files.filter((file): file is AngularFile => file !== null);
-}
-
 /**
  * Checks whether a value is safe to use as a single project directory name.
  *
@@ -882,6 +861,15 @@ function isProjectName(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "" && !/[\\/]/.test(value) && value !== "." && value !== "..";
 }
 
+/**
+ * Determines whether a revision presentation requires generated HTML.
+ *
+ * @param {Interaction["presentation"] | undefined} presentation - Requested revision presentation.
+ * @returns {boolean} Whether the presentation needs an HTML reference.
+ *
+ * @example
+ * requiresRevisionHtml("modal"); // true
+ */
 export function requiresRevisionHtml(presentation: Interaction["presentation"] | undefined): boolean {
   return presentation === "modal" || presentation === "tab" || presentation === "new_page";
 }
