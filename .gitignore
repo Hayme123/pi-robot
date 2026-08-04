@@ -3,3 +3,4 @@ dist/
 projects/
 .env
 sessions/
+.pi-agent/auth.json
