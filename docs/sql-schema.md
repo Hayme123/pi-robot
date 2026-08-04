@@ -72,10 +72,10 @@ create table public.projects (
 | `owner_id` | User who created the project. It is attribution, not a read-access boundary. |
 | `name` | User-facing project name, such as `landing-page`. |
 | `current_artifact_prefix` | R2 prefix containing the current project source and file manifest. |
-| `preview_status` | Current Modal preview state. |
-| `preview_base_url` | Modal tunnel URL without a connect token. |
+| `preview_status` | Current Lightsail preview state. |
+| `preview_base_url` | Active Nginx preview URL. |
 | `preview_error` | Latest preview failure message. |
-| `preview_expires_at` | Expected Modal preview expiration. |
+| `preview_expires_at` | Expected preview expiration. |
 | `created_at` | Project creation time. |
 | `updated_at` | Last project or preview update. |
 
@@ -134,16 +134,13 @@ create index jobs_by_project_created_at
 
 ## R2 object layout
 
-R2 is the durable source of project files. Each completed job creates an immutable artifact set, so a separate versions table is unnecessary.
+R2 is the durable source of project files. Each project has one name-based prefix containing its latest complete folder archive and source manifest.
 
 ```text
 projects/
-`-- <project-id>/
-    `-- jobs/
-        `-- <job-id>/
-            |-- workspace.zip
-            |-- files.json
-            `-- assets/
+`-- <project-name>/
+    |-- workspace.zip
+    `-- files.json
 ```
 
 The application derives object keys from `artifact_prefix`:
@@ -151,14 +148,13 @@ The application derives object keys from `artifact_prefix`:
 ```text
 <prefix>/workspace.zip
 <prefix>/files.json
-<prefix>/assets/
 ```
 
-`projects.current_artifact_prefix` points to the active artifact set. Signed R2 URLs, credentials, `node_modules`, build output, and Modal connect tokens are never stored in these tables.
+`workspace.zip` contains the complete project folder, including Figma and revision assets, while excluding dependencies, builds, logs, and credentials. `projects.current_artifact_prefix` points to the active artifact set. Signed R2 URLs and credentials are never stored in these tables.
 
 ## Job completion
 
-After the sandbox output is uploaded to R2, one database transaction must:
+After the generated project folder is uploaded to R2, one database transaction must:
 
 1. Set `jobs.artifact_prefix`.
 2. Mark the job `completed` and set its completion timestamps.
@@ -167,14 +163,9 @@ After the sandbox output is uploaded to R2, one database transaction must:
 
 If the R2 upload fails, the current project pointer remains unchanged and the job is marked `failed`.
 
-## Modal sandbox lookup
+## Lightsail runtime lookup
 
-No sandbox table is required. Fastify derives deterministic Modal names and looks them up through Modal:
-
-```text
-job-<job-id>
-preview-<project-id>
-```
+No runtime table is required. Generation runs in the API container, and Fastify tracks active Angular preview processes in memory. Supabase remains authoritative for project and job state.
 
 ## Supabase Realtime
 
@@ -234,4 +225,4 @@ custom project WebSocket snapshots
 in-memory project event subscriptions
 ```
 
-Projects are publicly readable, but the R2 bucket remains private. Fastify issues short-lived access URLs and never mounts the complete bucket into an agent sandbox, so public access does not expose storage credentials or let one sandbox modify another project's artifacts.
+Projects are publicly readable, but the R2 bucket remains private. Fastify issues short-lived access URLs, and generated folders exclude credentials, so public access does not expose storage credentials.

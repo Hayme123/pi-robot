@@ -3,7 +3,7 @@
 ## Repositories in scope
 
 ```text
-pi-robot   Fastify orchestration API and Modal worker code
+pi-robot   Fastify orchestration API, worker, and preview runtime
 robot-web  Angular 21.2 zoneless SSR application and Express BFF
 ```
 
@@ -31,24 +31,24 @@ robot-web Express BFF
   |-- serves public project reads and previews
   |-- validates Supabase sessions for mutations
   |-- forwards user JWT ---> pi-robot Fastify
-  `-- proxies short-lived Modal preview responses
+  `-- proxies Lightsail-hosted preview responses
 
 pi-robot Fastify
   |-- metadata/status -----> Supabase Postgres
   |-- project artifacts ---> Cloudflare R2
-  `-- execution -----------> Modal Sandboxes
-                               |-- job: Pi + Angular build
-                               `-- preview: ng serve + Modal tunnel
+  `-- execution -----------> API container on Amazon Lightsail
+                               |-- Pi + Angular build
+                               `-- Nginx ---> Angular preview process
 ```
 
-There is no durable project storage on either application host. R2 is the file source of truth, Supabase is the metadata/status source of truth, and Modal filesystems are temporary.
+There is no durable project storage on either application host. R2 is the file source of truth, Supabase is the metadata/status source of truth, and Lightsail workspaces are disposable. A single dedicated Lightsail instance runs the complete `pi-robot` Compose stack; Pi jobs share the API container.
 
 ## Delivery assumptions
 
 - Two-week sprints.
 - Projects, jobs, source manifests, downloads, and previews are readable by anyone.
 - Supabase Auth is required only for creating or modifying projects.
-- The Angular BFF remains; the browser does not call Fastify, R2, or Modal directly.
+- The Angular BFF remains; the browser does not call Fastify, R2, or the Lightsail host directly.
 - Anonymous and authenticated browsers may connect directly to Supabase Realtime.
 - Existing route URLs and UI domain models remain stable where practical.
 - Existing local projects are migrated before local storage is removed.
@@ -66,9 +66,11 @@ Replace placeholder authentication and define contracts shared by both repositor
 - Create staging and production Supabase projects.
 - Create private staging and production R2 buckets.
 - Create least-privilege R2 credentials for Fastify only.
-- Create and deploy the Modal App used by named sandboxes.
-- Create Modal Secrets for model-provider credentials and the minimum Pi authentication payload.
-- Separate staging and production secrets.
+- Create staging and production Amazon Lightsail instances with static IPs, restricted firewalls, Docker, and Compose.
+- Point deployment domains at the static IPs and configure Nginx TLS certificates.
+- Deploy the complete `pi-robot` repository as a Compose stack, with only Nginx exposing ports 80 and 443.
+- Store model-provider, Pi, Supabase, and R2 credentials in host-managed environment files readable only by the deployment user.
+- Separate staging and production instances and secrets.
 
 ### `robot-web`
 
@@ -90,20 +92,12 @@ Replace placeholder authentication and define contracts shared by both repositor
 - Keep project read, file, download, and preview endpoints public.
 - Validate Supabase JWTs on create, revision, run, and stop endpoints.
 - Use the JWT subject as `owner_id`; never accept `owner_id` from request bodies.
-- Add Supabase, R2, and Modal configuration with startup validation.
+- Add Supabase, R2, and local container-runtime configuration with startup validation.
 - Define deterministic R2 prefixes:
 
   ```text
-  projects/<project-id>/jobs/<job-id>/workspace.zip
-  projects/<project-id>/jobs/<job-id>/files.json
-  projects/<project-id>/jobs/<job-id>/assets/
-  ```
-
-- Define deterministic Modal names:
-
-  ```text
-  job-<job-id>
-  preview-<project-id>
+  projects/<project-name>/workspace.zip
+  projects/<project-name>/files.json
   ```
 
 - Extend create/revision responses without breaking existing fields:
@@ -126,7 +120,7 @@ Replace placeholder authentication and define contracts shared by both repositor
 - Protected mutation requests reject missing, expired, and invalid sessions.
 - Anonymous users can list, inspect, download, subscribe to, and preview every project.
 - Authenticated users cannot modify projects they do not own.
-- No service-role, R2, Modal, or provider credential enters the browser bundle.
+- No service-role, R2, host, or provider credential enters the browser bundle.
 
 ---
 
@@ -213,8 +207,8 @@ Make R2 the only durable project file store while preserving the current code vi
 ### `pi-robot`
 
 - Add R2 upload, download, existence-check, and signed-URL operations.
-- Store immutable outputs under the job ID.
-- Archive `workspace.zip` without:
+- Store the latest complete project under `projects/<project-name>/`, replacing `workspace.zip` and `files.json` after each successful setup, HTML, Angular, or revision stage.
+- Put the complete project folder—including Figma and revision assets—inside `workspace.zip`, without:
 
   ```text
   node_modules/
@@ -229,8 +223,9 @@ Make R2 the only durable project file store while preserving the current code vi
 - Update `projects.current_artifact_prefix` only after required uploads succeed.
 - Read `/project/:name/files` from R2 `files.json`.
 - Make `/project/:name/download` return a short-lived signed R2 URL or redirect.
-- Keep Figma and revision assets under the job's artifact prefix.
-- Never mount the complete R2 bucket into an agent sandbox.
+- Treat the local project folder as a cache: delete synced folders older than 24 hours during the daily cleanup.
+- Restore the complete folder from the current R2 `workspace.zip` before a later HTML, Angular, revision, or run request when it is absent locally.
+- Never mount the complete R2 bucket or place host credentials in a project folder.
 
 ### `robot-web` BFF
 
@@ -249,7 +244,7 @@ Make R2 the only durable project file store while preserving the current code vi
 - Create an idempotent `pi-robot` command that:
   1. Reads each existing local project.
   2. Creates the owner/project/completed-job rows.
-  3. Uploads `workspace.zip`, `files.json`, and assets.
+  3. Uploads the complete-folder `workspace.zip` and `files.json`.
   4. Sets `current_artifact_prefix` after verification.
   5. Writes a report without deleting local data.
 
@@ -257,50 +252,33 @@ Make R2 the only durable project file store while preserving the current code vi
 
 - The dashboard, source viewer, revision code comments, and downloads work using only Supabase and R2.
 - Fastify can start with an empty local filesystem.
-- Failed uploads cannot replace the current artifact.
+- `workspace.zip` is uploaded only after `files.json`, so a failed manifest upload cannot replace the restorable project archive.
 - Existing projects can be migrated repeatedly without duplicate active projects.
 
 ---
 
-## Sprint 4 — Modal job sandboxes
+## Sprint 4 — Lightsail job runtime
 
 ### Goal
 
-Run Pi and every agent-controlled command inside isolated Modal job sandboxes.
+Deploy the complete `pi-robot` stack to Lightsail and run Pi directly inside the API container.
 
-### Modal runtime image
+### Runtime image
 
-- Build and publish a named image separately from sandbox creation.
-- Include Node, Pi, Chromium, zip/unzip, Prettier, skills, safe Pi settings, and worker code.
+- Build the API image on the Lightsail host through Docker Compose.
+- Include Node, Pi, Chromium, zip/unzip, Prettier, skills, and safe Pi settings.
 - Bake Angular dependencies into `/opt/angular-deps` using build secrets for the private Pantry registry.
-- Exclude `.env`, `.pi-agent/auth.json`, R2 credentials, Supabase service credentials, and Fastify credentials.
+- Mount `.pi-agent` at runtime; exclude its credentials, `.env`, and host secrets from generated folders and R2 archives.
 - Pin external image versions.
-
-### `pi-robot` worker
-
-- Add worker commands:
-
-  ```text
-  generate-html
-  generate-angular
-  generate-prompt
-  apply-revision
-  ```
-
-- Move Pi session creation and tool execution from the Fastify process into the worker.
-- Restore one project to `/workspace/app` and symlink image-baked dependencies.
-- Emit one structured completion result containing summary and usage.
-- Exit non-zero with a safe error message on failure.
 
 ### `pi-robot` orchestration
 
-- Create `job-<job-id>` with explicit CPU, memory, command, and sandbox timeouts.
-- Transfer only that job's inputs from R2.
-- Run the worker and check its return code.
-- Upload successful output to R2 before completing the Supabase job.
-- Restrict outbound networking to verified model-provider domains.
-- Treat an existing named job sandbox as a conflict.
-- Terminate the sandbox in `finally`.
+- Give every Pi session its project-specific working directory.
+- Restore the complete project folder from R2 when it is absent locally.
+- Run generation through the existing functions in `src/services/pi.ts`.
+- Upload the complete folder to R2 after each successful generation stage before marking that stage complete.
+- Keep mutation routes authenticated and run the stack only on a dedicated Lightsail instance because jobs share one API container.
+- Delete only R2-synced local folders older than 24 hours, skipping active generation and preview projects.
 
 ### `robot-web`
 
@@ -311,38 +289,38 @@ Run Pi and every agent-controlled command inside isolated Modal job sandboxes.
 
 ### Acceptance criteria
 
-- Pi, its bash tools, Angular builds, and Prettier execute only in Modal.
-- A job cannot access another project's files or R2 objects.
+- Pi, its bash tools, Angular builds, and Prettier execute inside the Lightsail API container without Modal.
+- Credentials and excluded build/dependency files never enter R2 archives.
 - `PromptComposerComponent` and `RunComponent` display progress through Supabase Realtime.
 - Failed jobs preserve the previous active artifact.
 
 ---
 
-## Sprint 5 — Modal previews and inspector proxy
+## Sprint 5 — Lightsail previews and inspector proxy
 
 ### Goal
 
-Replace Cloudflare previews without losing the existing same-origin inspector and comment workflow.
+Move previews behind the Lightsail Nginx ingress without losing the same-origin inspector or comment workflow.
 
 ### `pi-robot`
 
-- Restore the current R2 artifact into `preview-<project-id>`.
-- Run Angular on fixed port `4200`.
-- Configure a Modal TCP readiness probe and encrypted tunnel.
-- Store preview status, base URL, error, and expiration on `projects`.
-- Add a public, rate-limited endpoint that creates a short-lived Modal Connect Token URL.
-- Do not store or log connect tokens.
-- Implement `/run` and `/stop` through deterministic Modal preview names.
+- Restore the current R2 project folder when it is absent locally.
+- Run Angular on an available port from `4200` through `4299` inside the API container.
+- Verify readiness before publishing the preview URL.
+- Let Nginx route `/previews/<port>/` to the matching private API-container port, including WebSocket upgrades.
+- Store preview status, Nginx URL, error, and expiration on `projects`.
+- Keep API, R2, Supabase, Pi, TLS, and host credentials out of generated project folders.
+- Implement `/run` and `/stop` through tracked Angular child processes.
 - Replace the preview after a successful revision.
 - Apply a maximum lifetime and reconcile expired previews.
 
 ### `robot-web` BFF
 
 - Keep `/preview/:projectName`; it is required for `preview-inspector.js`, same-origin iframe access, Vite URL rewriting, and element comments.
-- Change `PreviewProxyService.resolveRunUrl()` to request a fresh short-lived preview URL from Fastify.
+- Change `PreviewProxyService.resolveRunUrl()` to read the active preview URL from Fastify.
 - Remove its dependency on `/projects` filesystem statuses.
 - Remove `__runUrl` from preview query strings.
-- Remove the process-local `runUrls` map as authoritative state; any short cache must expire before the Modal token.
+- Remove the process-local `runUrls` map as authoritative state; Supabase remains authoritative across restarts.
 - Forward the preview response through the existing inspector injection path.
 - Remove `Access-Control-Allow-Origin: *` unless a verified consumer requires it.
 
@@ -351,20 +329,21 @@ Replace Cloudflare previews without losing the existing same-origin inspector an
 - Keep the iframe pointed at the same-origin `/preview/:projectName/` route.
 - Simplify `buildPreviewPath()` to use only project name and an optional job/revision cache-buster.
 - Replace `runUrl`-driven iframe state with `projects.preview_status` and `updated_at` from Realtime.
-- Remove the five-second WebSocket URL delay; Modal readiness is authoritative.
+- Remove the five-second WebSocket URL delay; the preview readiness check is authoritative.
 - Preserve inspector selection, comments, source-line comments, and iframe message validation.
 - Render starting, ready, failed, expired, and stopped preview states.
 
 ### Cleanup
 
-- Remove `cloudflared`, local free-port allocation, child-process maps, and Cloudflare URL parsing from `pi-robot`.
+- Remove `cloudflared` and tunnel URL parsing from `pi-robot`.
+- Allocate preview ports only from `4200` through `4299`, use Angular process handles as runtime handles, and use Nginx paths as public URLs.
 - Do not remove the frontend preview proxy.
 
 ### Acceptance criteria
 
-- Modal serves the preview while the robot-web BFF still injects the inspector.
+- Nginx serves the Lightsail preview while the robot-web BFF still injects the inspector.
 - Element and code comments continue to create valid revision requests.
-- The iframe never receives a durable Modal credential.
+- The iframe never receives an API, R2, Supabase, Pi, or host credential.
 - Fastify and robot-web can both restart without losing preview metadata.
 
 ---
@@ -379,7 +358,7 @@ Remove compatibility paths, migrate existing data, and prove cloud recovery.
 
 - Remove native WebSocket parsing, reconnect timers, `/api/config` WebSocket URL handling, and related tests.
 - Keep `ProjectEventsService` only if its signal facade remains useful; otherwise rename it after consumers are migrated.
-- Remove `runUrl`, `runRevisionId`, and `runUrlPending` state that existed only for Cloudflare/WebSocket coordination.
+- Remove `runUrl`, `runRevisionId`, and `runUrlPending` state that existed only for tunnel/WebSocket coordination.
 - Update `RunComponent` tests that currently mention WebSocket overlays and run URLs to use Supabase job/project updates.
 - Add tests for anonymous Realtime, reconnect, preview expiration, public preview proxying, and signed downloads.
 - Run `npm run build` in `robot-web` as the final Angular check.
@@ -396,20 +375,20 @@ Remove compatibility paths, migrate existing data, and prove cloud recovery.
 - Dry-run the local-project migration.
 - Compare project counts, archive hashes, file manifests, and revision requests.
 - Migrate production projects and keep local files read-only during the rollback window.
-- Switch reads to Supabase/R2 and execution to Modal.
+- Switch reads to Supabase/R2 and execution to the Lightsail Compose stack.
 - Remove project volume mounts only after verification.
 - Add stale-job, expired-preview, and orphan-artifact reconciliation.
 - Add R2 lifecycle rules for abandoned failed-job artifacts.
-- Add logs/metrics for project ID, job ID, stage, sandbox name, duration, cost, Modal startup, and R2 failures.
-- Redact prompts where required and always redact signed URLs, connect tokens, and credentials.
+- Add logs/metrics for project ID, job ID, stage, container name, duration, cost, container startup, and R2 failures.
+- Redact prompts where required and always redact signed URLs and credentials.
 
 ### Acceptance criteria
 
 - Existing users and projects are available through Supabase and R2.
 - Neither repository requires durable local project files.
 - The frontend uses Supabase Realtime exclusively for project progress.
-- Horizontal replicas do not depend on in-memory job, WebSocket, preview, or file state.
-- Restart, rollback, public-read RLS, cross-project sandbox isolation, and secret-exclusion checks pass.
+- API restarts recover project files from R2; previews can be started again through `/run`.
+- Restart, rollback, public-read RLS, authenticated mutations, and secret-exclusion checks pass.
 
 ---
 
@@ -418,18 +397,18 @@ Remove compatibility paths, migrate existing data, and prove cloud recovery.
 | Endpoint | Cloud behavior | `robot-web` impact |
 | --- | --- | --- |
 | `POST /project` | Create project/job and persist setup assets. | Existing BFF validation; consume IDs. |
-| `POST /project/:name/html` | Run HTML worker in Modal. | No direct UI change. |
-| `POST /project/:name/angular` | Run Angular worker in Modal. | No direct UI change. |
-| `POST /project/all` | Run all stages in one job sandbox. | Prompt composer consumes project/job IDs. |
-| `POST /project/prompt` | Create and generate in Modal. | Prompt composer consumes project/job IDs. |
+| `POST /project/:name/html` | Run HTML worker on Lightsail. | No direct UI change. |
+| `POST /project/:name/angular` | Run Angular worker on Lightsail. | No direct UI change. |
+| `POST /project/all` | Run all stages in the Lightsail API container. | Prompt composer consumes project/job IDs. |
+| `POST /project/prompt` | Create and generate on Lightsail. | Prompt composer consumes project/job IDs. |
 | `POST /project/:name/revisions` | Restore R2 artifact and create a new job artifact. | Existing revision UI uses job ID. |
-| `POST /project/:name/run` | Start/reuse Modal preview. | Status arrives through Realtime. |
+| `POST /project/:name/run` | Start/reuse a Lightsail Angular preview process behind Nginx. | Status arrives through Realtime. |
 | `POST /project/:name/stop` | Terminate named preview. | Existing action remains. |
 | `GET /projects` | Read Supabase projects/jobs. | Adapter preserves `ProjectSummary`. |
 | `GET /project/:name` | Read Supabase project/job history. | Adapter preserves revision cards. |
 | `GET /project/:name/files` | Read current R2 `files.json`. | Existing source viewer remains. |
 | `GET /project/:name/download` | Redirect to signed R2 download. | Stop buffering ZIP in browser/BFF. |
-| `GET /project/:name/preview-url` | Create fresh Modal Connect Token URL. | Called by preview BFF only. |
+| `GET /project/:name/preview-url` | Return the active Nginx preview URL. | Called by preview BFF only. |
 | `/ws/projects/:name` | Removed after cutover. | Replaced inside `ProjectEventsService`. |
 | `/preview/:name/*` | Continue proxying and injecting inspector. | Must remain. |
 

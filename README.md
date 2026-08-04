@@ -9,9 +9,22 @@ See the complete [text and ASCII architecture](docs/architecture.md).
 ```bash
 npm install
 cp .env.example .env
-# Export your provider key, or use credentials already configured through Pi.
 npm run dev
 ```
+
+R2 stores the complete project folder after each successful generation stage. Local folders are cache only: synced folders older than 24 hours are deleted daily and restored from the current `workspace.zip` when a later HTML, Angular, revision, or run request needs them.
+
+## Amazon Lightsail deployment
+
+The deployment target is one Amazon Lightsail instance running the complete `pi-robot` Docker Compose stack. Pi generation and Angular previews run inside the API container; Modal is no longer part of the architecture.
+
+Provision Docker and Compose, restrict the Lightsail firewall to SSH and Nginx, clone the repository, set `PUBLIC_BASE_URL` in `.env`, and start the stack:
+
+```bash
+NPM_TOKEN=... docker compose up -d --build
+```
+
+R2 and Supabase remain the durable stores. Lightsail job workspaces are disposable, and Nginx provides ingress for the API and previews. The included `nginx.conf` listens on port 80; add TLS before production. See [the cloud migration sprint plan](docs/cloud-migration-sprint-plan.md) for the cutover steps.
 
 ## API
 
@@ -73,24 +86,24 @@ curl http://localhost:3000/project/landing-page/files
 # {"project_name":"landing-page","files":[{"name":"src","path":"src","type":"directory","children":[...]}]}
 ```
 
-Run a generated Angular project and expose it through a free temporary Cloudflare Quick Tunnel:
+Run a generated Angular project behind the Lightsail Nginx ingress:
 
 ```bash
 curl -X POST http://localhost:3000/project/PROJECT_NAME/run
-# {"project_name":"PROJECT_NAME","url":"https://...trycloudflare.com"}
+# {"project_name":"PROJECT_NAME","url":"https://pi.example.com/previews/4200/"}
 ```
 
-The URL remains available while the API container and Angular process are running.
+The URL remains available while the Angular preview process is running.
 
 Run every generated project with installed Angular dependencies in parallel:
 
 ```bash
 curl -X POST http://localhost:3000/projects/run
-# {"projects":[{"project_name":"landing-page","status":"running","url":"https://...trycloudflare.com"}]}
+# {"projects":[{"project_name":"landing-page","status":"running","url":"https://pi.example.com/previews/4200/"}]}
 ```
 
 Incomplete projects are returned as `skipped`; one launch failure does not stop the others.
 
 ## Security
 
-Pi has shell and file-writing access. This starter sets a project-specific working directory, but that is not a security boundary: shell commands can still reach outside it. Production deployments must execute each project in its own sandbox/container with CPU, memory, filesystem, network, and command limits.
+Pi has shell and file-writing access inside the API container. Project jobs are not isolated from one another, so expose only Nginx, require authentication for mutations, and run this stack only on a dedicated Lightsail instance.
