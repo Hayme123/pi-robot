@@ -20,7 +20,7 @@ const issuerBase = `http://127.0.0.1:${address.port}`;
 process.env.SUPABASE_URL = issuerBase;
 
 const { authenticate } = await import('../dist/services/auth.js');
-const { artifactKeys, modalJobName, modalPreviewName } = await import('../dist/services/cloud-contracts.js');
+const { artifactKeys } = await import('../dist/services/cloud-contracts.js');
 
 const app = Fastify();
 app.get('/public', async () => ({ public: true }));
@@ -61,12 +61,9 @@ test('keeps reads public and derives owner_id from a valid Supabase JWT', async 
   assert.equal(spoofed.statusCode, 400);
 });
 
-test('uses deterministic R2 keys and Modal names', () => {
-  assert.deepEqual(artifactKeys('project-id', 'job-id'), {
-    workspace: 'projects/project-id/jobs/job-id/workspace.zip',
-    files: 'projects/project-id/jobs/job-id/files.json',
-    assets: 'projects/project-id/jobs/job-id/assets/',
+test('stores each complete project under its project-name prefix', () => {
+  assert.deepEqual(artifactKeys('ai-mirror-landing'), {
+    workspace: 'projects/ai-mirror-landing/workspace.zip',
+    files: 'projects/ai-mirror-landing/files.json',
   });
-  assert.equal(modalJobName('job-id'), 'job-job-id');
-  assert.equal(modalPreviewName('project-id'), 'preview-project-id');
 });

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -31,6 +31,7 @@ globalThis.fetch = async (input) => {
 };
 const { buildApp } = await import('../dist/app.js');
 const { requiresRevisionHtml } = await import('../dist/routes/project.js');
+const { archiveExclusions, cleanupSyncedProjects } = await import('../dist/services/artifacts.js');
 
 test.after(() => rm(projectsRoot, { recursive: true, force: true }));
 
@@ -39,6 +40,30 @@ test('requires HTML before Angular for page, modal, and tab revisions', () => {
   assert.equal(requiresRevisionHtml('modal'), true);
   assert.equal(requiresRevisionHtml('tab'), true);
   assert.equal(requiresRevisionHtml('auto'), false);
+});
+
+test('excludes generated files and credentials from R2 project archives', () => {
+  const patterns = archiveExclusions();
+  for (const pattern of ['node_modules/*', '.angular/*', 'dist/*', '.env', '.npmrc', '.pi-agent/*', 'auth.json', '*.log']) {
+    assert.ok(patterns.includes(pattern), `missing exclusion: ${pattern}`);
+  }
+});
+
+test('deletes only R2-synced project folders older than one day', async () => {
+  const oldProject = path.join(projectsRoot, 'old-cache');
+  const freshProject = path.join(projectsRoot, 'fresh-cache');
+  const unsyncedProject = path.join(projectsRoot, 'unsynced-cache');
+  await Promise.all([mkdir(oldProject), mkdir(freshProject), mkdir(unsyncedProject)]);
+  await Promise.all([
+    writeFile(path.join(oldProject, '.r2-synced'), 'synced'),
+    writeFile(path.join(freshProject, '.r2-synced'), 'synced'),
+  ]);
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  await utimes(path.join(oldProject, '.r2-synced'), old, old);
+
+  assert.deepEqual(await cleanupSyncedProjects(projectsRoot, new Set(), Date.now()), ['old-cache']);
+  await assert.rejects(() => access(oldProject));
+  await Promise.all([access(freshProject), access(unsyncedProject)]);
 });
 
 test('maps Supabase project and job rows to the compatibility response', async () => {
@@ -80,6 +105,8 @@ test('gets an Angular project source files', async () => {
   await mkdir(path.join(projectsRoot, 'viewer', 'viewer', 'node_modules'));
   await writeFile(path.join(projectsRoot, 'viewer', 'viewer', 'angular.json'), '{}');
   await writeFile(path.join(projectsRoot, 'viewer', 'viewer', '.env'), 'SECRET=hidden');
+  await writeFile(path.join(projectsRoot, 'viewer', 'viewer', '.npmrc'), 'TOKEN=hidden');
+  await writeFile(path.join(projectsRoot, 'viewer', 'viewer', 'debug.log'), 'temporary');
   await writeFile(path.join(sourceDir, 'app.ts'), 'export class App {}');
   await writeFile(path.join(sourceDir, 'logo.png'), Buffer.from([0, 1, 2]));
 
