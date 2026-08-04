@@ -81,7 +81,19 @@ export async function generateAngularProject(projectDir: string, angularDir: str
   }
 }
 
-/** Lets Pi choose a safe folder name for a prompt-generated project. */
+/**
+ * Uses Pi to choose an unused, safe folder name for a prompt-generated project.
+ *
+ * @param {string} prompt - User's application request.
+ * @param {string} projectsRoot - Root containing project directories.
+ * @param {string[]} existingNames - Names that cannot be reused.
+ * @param {FastifyBaseLogger} log - API logger.
+ * @returns {Promise<string>} Valid unused project name.
+ * @throws {Error} If Pi does not return a valid unused name.
+ *
+ * @example
+ * await defineProjectName("Build a task board", "projects", [], app.log);
+ */
 export async function defineProjectName(prompt: string, projectsRoot: string, existingNames: string[], log: FastifyBaseLogger): Promise<string> {
   const session = await createProjectSession(projectsRoot, "low", log);
   try {
@@ -101,7 +113,17 @@ export async function defineProjectName(prompt: string, projectsRoot: string, ex
   }
 }
 
-/** Creates an Angular application directly from a text prompt without visual reference files. */
+/**
+ * Generates an Angular application directly from a text prompt.
+ *
+ * @param {string} prompt - User's application request.
+ * @param {string} angularDir - Existing Angular workspace.
+ * @param {FastifyBaseLogger} log - API logger.
+ * @returns {Promise<Usage>} Pi session usage.
+ *
+ * @example
+ * await generatePromptProject("Build a task board", "projects/task-board/task-board", app.log);
+ */
 export async function generatePromptProject(prompt: string, angularDir: string, log: FastifyBaseLogger): Promise<Usage> {
   log.info({ angularDir }, "Starting prompt-only Angular generation");
   const session = await createProjectSession(angularDir, "high", log);
@@ -121,7 +143,19 @@ export async function generatePromptProject(prompt: string, angularDir: string, 
   }
 }
 
-/** Applies review comments to an existing Angular project. */
+/**
+ * Applies a structured revision to an existing Angular project.
+ *
+ * @param {string} angularDir - Existing Angular workspace.
+ * @param {unknown} revision - Revision prompt and comments.
+ * @param {{ commentId: string | number; directory: string; htmlPath?: string }[]} figmaFrames - Downloaded Figma references.
+ * @param {"low" | "medium" | "high"} thinkingLevel - Pi reasoning level.
+ * @param {FastifyBaseLogger} log - API logger.
+ * @returns {Promise<RevisionResult>} Revision usage and summary.
+ *
+ * @example
+ * await applyProjectRevision("projects/site/site", { prompt: "Update the heading", comments: [] }, [], "medium", app.log);
+ */
 export async function applyProjectRevision(
   angularDir: string,
   revision: unknown,
@@ -134,7 +168,7 @@ export async function applyProjectRevision(
   const startingCost = getUsage(session).cost;
   try {
     await session.prompt([
-      "Use the angular-developer skill to apply this revision to the existing Angular application.",
+      "Apply this revision to the existing Angular application.",
       `Angular project (the only folder you may modify): ${angularDir}`,
       `Revision: ${JSON.stringify(revision)}`,
       `Attached Figma references (read-only): ${JSON.stringify(figmaFrames)}`,
