@@ -4,7 +4,7 @@ FROM node:24-bookworm
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip zip \
+RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip zip chromium \
   && rm -rf /var/lib/apt/lists/*
 
 COPY tsconfig.json ./
@@ -22,6 +22,7 @@ RUN --mount=type=secret,id=npm_token mkdir -p /opt/angular-deps \
 RUN npm run build && npm prune --omit=dev
 
 ENV NODE_ENV=production \
+    CHROME_BIN=/usr/bin/chromium \
     HOST=0.0.0.0 \
     PORT=3000 \
     PROJECTS_ROOT=/workspace/projects \

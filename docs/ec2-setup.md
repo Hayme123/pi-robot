@@ -203,3 +203,16 @@ Stopping Compose stops active previews. Project folders are local cache; complet
 - Back up secrets through encrypted secret management, never Git or R2 project archives.
 - Rotate provider, Supabase, R2, registry, and cron credentials after exposure.
 - Apply Ubuntu updates regularly and rebuild after dependency updates.
+
+
+```yaml
+   api:
+     ports:
+       - "80:3000"
+ ```
+
+ Then restart:
+
+ ```bash
+   docker compose up -d --force-recreate api
+ ```
