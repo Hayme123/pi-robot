@@ -14,7 +14,7 @@ export type JobStatus = {
   error?: string;
 };
 
-export type ProjectStage = "setup" | "html" | "angular" | "revision" | "run";
+export type ProjectStage = "setup" | "html" | "angular" | "persist" | "revision" | "run";
 
 type JobRow = {
   id: string;
@@ -41,6 +41,7 @@ type ProjectRow = {
   preview_error: string | null;
   preview_expires_at: string | null;
   local_expires_at?: string | null;
+  deleted_at?: string | null;
   updated_at: string;
   jobs?: JobRow[];
 };
@@ -49,6 +50,7 @@ const stageNames: Record<ProjectStage, string> = {
   setup: "setup",
   html: "html",
   angular: "angular",
+  persist: "persist",
   revision: "angular",
   run: "preview",
 };
@@ -188,11 +190,22 @@ export async function updatePreview(projectName: string, status: JobStatus): Pro
  * await stopPreview("marketing-site");
  */
 export async function stopPreview(projectName: string): Promise<void> {
-  await query(`projects?name=eq.${encodeURIComponent(projectName)}`, {
+  await query(`projects?name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null`, {
     method: "PATCH",
     headers: { Prefer: "return=minimal" },
     body: JSON.stringify({ preview_status: "stopped", preview_base_url: null, preview_error: null, preview_expires_at: null, updated_at: new Date().toISOString() }),
   });
+}
+
+/** Soft-deletes a project after freeing its original name for reuse. */
+export async function softDeleteProject(projectName: string, renamedProjectName: string, artifactRenamed: boolean): Promise<string | null> {
+  const deletedAt = new Date().toISOString();
+  const rows = await query<{ name: string }[]>(`projects?name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ name: renamedProjectName, deleted_at: deletedAt, ...(artifactRenamed ? { current_artifact_prefix: `projects/${renamedProjectName}` } : {}), preview_status: "stopped", preview_base_url: null, preview_error: null, preview_expires_at: null, updated_at: deletedAt }),
+  });
+  return rows[0]?.name ?? null;
 }
 
 /**
@@ -241,7 +254,7 @@ export async function renewLocalExpiry(projectName: string): Promise<void> {
 
 /** Retrieves the expiration and artifact state required by internal cleanup. */
 export async function getProjectExpiry(projectName: string): Promise<Pick<ProjectRow, "name" | "preview_expires_at" | "local_expires_at" | "current_artifact_prefix"> | null> {
-  const rows = await query<Pick<ProjectRow, "name" | "preview_expires_at" | "local_expires_at" | "current_artifact_prefix">[]>(`projects?select=name,preview_expires_at,local_expires_at,current_artifact_prefix&name=eq.${encodeURIComponent(projectName)}&limit=1`);
+  const rows = await query<Pick<ProjectRow, "name" | "preview_expires_at" | "local_expires_at" | "current_artifact_prefix">[]>(`projects?select=name,preview_expires_at,local_expires_at,current_artifact_prefix&name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null&limit=1`);
   return rows[0] ?? null;
 }
 
@@ -308,7 +321,7 @@ export async function completeArtifact(projectName: string, jobId: string, artif
  * await listProjects();
  */
 export async function listProjects(): Promise<ReturnType<typeof mapProject>[]> {
-  const rows = await query<ProjectRow[]>("projects?select=*,jobs(*)&order=name.asc&jobs.order=created_at.asc");
+  const rows = await query<ProjectRow[]>("projects?select=*,jobs(*)&deleted_at=is.null&order=name.asc&jobs.order=created_at.asc");
   return rows.map(mapProject);
 }
 
@@ -322,12 +335,12 @@ export async function listProjects(): Promise<ReturnType<typeof mapProject>[]> {
  * await getProject("marketing-site");
  */
 export async function getProject(projectName: string): Promise<ReturnType<typeof mapProject> | null> {
-  const rows = await query<ProjectRow[]>(`projects?select=*,jobs(*)&name=eq.${encodeURIComponent(projectName)}&jobs.order=created_at.asc`);
+  const rows = await query<ProjectRow[]>(`projects?select=*,jobs(*)&name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null&jobs.order=created_at.asc`);
   return rows[0] ? mapProject(rows[0]) : null;
 }
 
 async function getProjectRow(projectName: string): Promise<ProjectRow> {
-  const rows = await query<ProjectRow[]>(`projects?select=*&name=eq.${encodeURIComponent(projectName)}&limit=1`);
+  const rows = await query<ProjectRow[]>(`projects?select=*&name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null&limit=1`);
   if (!rows[0]) throw new Error("Project not found");
   return rows[0];
 }
@@ -370,5 +383,5 @@ function mapProject(project: ProjectRow) {
       updated_at: project.updated_at,
     };
   }
-  return { project_id: project.id, project_name: project.name, statuses };
+  return { project_id: project.id, project_name: project.name, updated_at: project.updated_at, statuses };
 }

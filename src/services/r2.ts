@@ -1,4 +1,4 @@
-import { GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { CopyObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { config } from "../config.js";
 
@@ -37,6 +37,11 @@ export async function uploadObject(key: string, body: Buffer | Uint8Array | stri
  * @example
  * await downloadObject("projects/site/workspace.zip");
  */
+export async function renameObject(sourceKey: string, destinationKey: string): Promise<void> {
+  await r2().send(new CopyObjectCommand({ Bucket: config.r2.bucket, CopySource: encodeURIComponent(`${config.r2.bucket}/${sourceKey}`), Key: destinationKey }));
+  await r2().send(new DeleteObjectCommand({ Bucket: config.r2.bucket, Key: sourceKey }));
+}
+
 export async function downloadObject(key: string): Promise<Buffer> {
   const response = await r2().send(new GetObjectCommand({ Bucket: config.r2.bucket, Key: key }));
   if (!response.Body) throw new Error(`R2 object has no body: ${key}`);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { artifactKeys, artifactPrefix } from "./cloud-contracts.js";
-import { downloadObject, objectExists, signedDownloadUrl, uploadObject } from "./r2.js";
+import { downloadObject, objectExists, renameObject, signedDownloadUrl, uploadObject } from "./r2.js";
 import { completeArtifact } from "./supabase.js";
 import { readProjectFiles } from "./project-files.js";
 
@@ -70,6 +70,19 @@ export async function persistProjectArtifact(projectName: string, jobId: string,
  * @example
  * await getProjectFiles("marketing-site");
  */
+/** Renames the current R2 artifacts to match a deleted project's renamed record. */
+export async function renameProjectArtifacts(projectName: string, renamedProjectName: string): Promise<boolean> {
+  const source = artifactKeys(projectName);
+  const destination = artifactKeys(renamedProjectName);
+  let moved = false;
+  for (const key of ["workspace", "files"] as const) {
+    if (!(await objectExists(source[key]))) continue;
+    await renameObject(source[key], destination[key]);
+    moved = true;
+  }
+  return moved;
+}
+
 export async function getProjectFiles(projectName: string): Promise<unknown | null> {
   const key = `${artifactPrefix(projectName)}/files.json`;
   if (!(await objectExists(key))) return null;

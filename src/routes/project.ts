@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +9,7 @@ import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 import { config } from "../config.js";
 import { authenticate } from "../services/auth.js";
 import { downloadFigmaFrames } from "../services/figma.js";
-import { getProjectDownloadUrl, getProjectFiles, persistProjectArtifact, restoreProjectWorkspace } from "../services/artifacts.js";
+import { getProjectDownloadUrl, getProjectFiles, persistProjectArtifact, renameProjectArtifacts, restoreProjectWorkspace } from "../services/artifacts.js";
 import { applyProjectRevision, defineProjectName, generateAngularProject, generateProjectHtml, generatePromptProject } from "../services/pi.js";
 import { readProjectFiles } from "../services/project-files.js";
 import {
@@ -18,6 +18,7 @@ import {
   getArtifactJob,
   getProject,
   listProjects,
+  softDeleteProject,
   stopActivePreviews,
   clearLocalExpiry,
   getProjectExpiry,
@@ -117,7 +118,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/projects", async () => ({ projects: await listProjects() }));
+  app.get("/projects", async () => ({ projects: (await listProjects()).map(({ project_name, updated_at }) => ({ project_name, updated_at })) }));
 
   app.get<{ Params: { projectName: string } }>("/project/:projectName/download", async (request, reply) => {
     const { projectName } = request.params;
@@ -153,6 +154,23 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     return project ?? reply.code(404).send({ error: "Project not found" });
   });
 
+  app.delete<{ Params: { projectName: string } }>("/project/:projectName", { preHandler: authenticate }, async (request, reply) => {
+    const { projectName } = request.params;
+    if (!isProjectName(projectName)) return reply.code(400).send({ error: "project_name must be a folder name" });
+
+    if (!(await getProject(projectName))) return reply.code(404).send({ error: "Project not found" });
+    await stopTrackedPreview(projectName, runningProjects);
+    const deletedProjectName = `${projectName} ${new Date().toISOString().replace(/[.:]/g, "-")}`;
+    const artifactsRenamed = await renameProjectArtifacts(projectName, deletedProjectName);
+    if (!(await softDeleteProject(projectName, deletedProjectName, artifactsRenamed))) return reply.code(404).send({ error: "Project not found" });
+    try {
+      await rename(path.join(config.projectsRoot, projectName), path.join(config.projectsRoot, deletedProjectName));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    return { project_name: projectName, deleted_project_name: deletedProjectName, status: "deleted" };
+  });
+
   app.post<{ Body: PromptProjectBody }>("/project/prompt", { schema: promptProjectSchema, preHandler: authenticate }, async (request, reply) => {
     const prompt = request.body?.prompt;
     if (typeof prompt !== "string" || !prompt.trim()) {
@@ -184,7 +202,6 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         await writeAngularStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
         const usage = await generatePromptProject(prompt.trim(), angularDir, request.log);
-        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost: usage.cost,
@@ -192,6 +209,8 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_window: usage.contextWindow,
           context_percent: usage.contextPercent,
         });
+        writeFailure = writePersistStatus;
+        await persistProject(projectName, jobId, projectDir);
 
         writeFailure = writeRunStatus;
         await writeRunStatus(projectDir, { status: "processing" });
@@ -245,7 +264,6 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         writeFailure = writeHtmlStatus;
         await writeHtmlStatus(projectDir, { status: "processing" });
         const html = await generateProjectHtml(projectDir, angularDir, request.log);
-        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeHtmlStatus(projectDir, {
           status: "completed",
           cost: html.cost,
@@ -254,12 +272,13 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_percent: html.contextPercent,
           output_html: "index.html",
         });
+        writeFailure = writePersistStatus;
+        await persistProject(projectName, jobId, projectDir);
 
         writeFailure = writeAngularStatus;
         await writeAngularStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
         const angular = await generateAngularProject(projectDir, angularDir, request.log);
-        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost: angular.cost,
@@ -267,6 +286,8 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_window: angular.contextWindow,
           context_percent: angular.contextPercent,
         });
+        writeFailure = writePersistStatus;
+        await persistProject(projectName, jobId, projectDir);
 
         writeFailure = writeRunStatus;
         await writeRunStatus(projectDir, { status: "processing" });
@@ -363,9 +384,9 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     const { projectId, jobId } = await getArtifactJob(projectName);
     await writeHtmlStatus(projectDir, { status: "processing" });
     runProjectTask(projectName, activeProjects, async () => {
+      let writeFailure = writeHtmlStatus;
       try {
         const { cost, contextLength, contextWindow, contextPercent } = await generateProjectHtml(projectDir, scaffoldDir, request.log);
-        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeHtmlStatus(projectDir, {
           status: "completed",
           cost,
@@ -374,9 +395,11 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_percent: contextPercent,
           output_html: "index.html",
         });
+        writeFailure = writePersistStatus;
+        await persistProject(projectName, jobId, projectDir);
         request.log.info({ projectName, cost }, "HTML generation job completed");
       } catch (error) {
-        await writeHtmlStatus(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
+        await writeFailure(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         app.log.error(error, `HTML generation failed: ${projectName}`);
       }
     });
@@ -424,10 +447,10 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     const { projectId, jobId } = await getArtifactJob(projectName);
     await writeAngularStatus(projectDir, { status: "processing" });
     runProjectTask(projectName, activeProjects, async () => {
+      let writeFailure = writeAngularStatus;
       try {
         await prepareAngularDependencies(angularDir, request.log);
         const { cost, contextLength, contextWindow, contextPercent } = await generateAngularProject(projectDir, angularDir, request.log);
-        await persistProjectArtifact(projectName, jobId, projectDir);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost,
@@ -435,9 +458,11 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_window: contextWindow,
           context_percent: contextPercent,
         });
+        writeFailure = writePersistStatus;
+        await persistProject(projectName, jobId, projectDir);
         request.log.info({ projectName, cost }, "Angular generation job completed");
       } catch (error) {
-        await writeAngularStatus(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
+        await writeFailure(projectDir, { status: "failed", error: error instanceof Error ? error.message : String(error) });
         app.log.error(error, `Angular generation failed: ${projectName}`);
       }
     });
@@ -485,7 +510,6 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         const htmlCost = completedFrames.reduce((total, result) => total + result.htmlCost, 0);
         await prepareAngularDependencies(angularDir, request.log);
         const usage = await applyProjectRevision(angularDir, revision, figmaFrames, revision.thinking_level, request.log);
-        await persistProjectArtifact(projectName, revisionId, projectDir);
         await writeRevisionStatus(projectDir, {
           revision_id: revisionId,
           request: revision,
@@ -496,6 +520,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
           context_percent: usage.contextPercent,
           summary: usage.summary,
         });
+        await persistProject(projectName, revisionId, projectDir);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await writeRevisionStatus(projectDir, { revision_id: revisionId, request: revision, status: "failed", error: message });
@@ -823,6 +848,16 @@ async function writeHtmlStatus(projectDir: string, status: JobStatus): Promise<v
 /** Writes the current Angular-generation status to Supabase. */
 async function writeAngularStatus(projectDir: string, status: JobStatus): Promise<void> {
   await writeStatus(projectDir, "angular", status);
+}
+
+async function persistProject(projectName: string, jobId: string, projectDir: string): Promise<void> {
+  await writePersistStatus(projectDir, { status: "processing", revision_id: jobId });
+  await persistProjectArtifact(projectName, jobId, projectDir);
+  await writePersistStatus(projectDir, { status: "completed", revision_id: jobId });
+}
+
+async function writePersistStatus(projectDir: string, status: JobStatus): Promise<void> {
+  await writeStatus(projectDir, "persist", status);
 }
 
 /** Updates one revision job in Supabase. */

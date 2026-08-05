@@ -95,8 +95,10 @@ test('gets all projects and their mapped statuses from Supabase', async () => {
   await app.close();
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(response.json().projects.map((project) => project.project_name), ['alpha', 'demo']);
-  assert.deepEqual(response.json().projects[0].statuses, { html });
+  assert.deepEqual(response.json().projects, [
+    { project_name: 'alpha', updated_at: '2026-01-02T00:00:00.000Z' },
+    { project_name: 'demo', updated_at: '2026-01-01T00:02:00.000Z' },
+  ]);
 });
 
 test('gets an Angular project source files', async () => {
