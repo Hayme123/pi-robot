@@ -62,7 +62,8 @@ create table public.projects (
   preview_expires_at timestamptz,
 
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz
 );
 ```
 
@@ -72,12 +73,13 @@ create table public.projects (
 | `owner_id` | User who created the project. It is attribution, not a read-access boundary. |
 | `name` | User-facing project name, such as `landing-page`. |
 | `current_artifact_prefix` | R2 prefix containing the current project source and file manifest. |
-| `preview_status` | Current Lightsail preview state. |
+| `preview_status` | Current EC2 preview state. |
 | `preview_base_url` | Active Nginx preview URL. |
 | `preview_error` | Latest preview failure message. |
 | `preview_expires_at` | Expected preview expiration. |
 | `created_at` | Project creation time. |
 | `updated_at` | Last project or preview update. |
+| `deleted_at` | Soft-deletion timestamp; null means active. Deleted projects are renamed with a timestamp so the original name can be reused. |
 
 ## `public.jobs`
 
@@ -150,7 +152,7 @@ The application derives object keys from `artifact_prefix`:
 <prefix>/files.json
 ```
 
-`workspace.zip` contains the complete project folder, including Figma and revision assets, while excluding dependencies, builds, logs, and credentials. `projects.current_artifact_prefix` points to the active artifact set. Signed R2 URLs and credentials are never stored in these tables.
+`workspace.zip` contains the complete project folder, including Figma and revision assets, while excluding dependencies, builds, logs, and credentials. `projects.current_artifact_prefix` points to the active artifact set. When a project is soft-deleted, its R2 prefix is renamed with the project record. Signed R2 URLs and credentials are never stored in these tables.
 
 ## Job completion
 
@@ -163,7 +165,7 @@ After the generated project folder is uploaded to R2, one database transaction m
 
 If the R2 upload fails, the current project pointer remains unchanged and the job is marked `failed`.
 
-## Lightsail runtime lookup
+## EC2 runtime lookup
 
 No runtime table is required. Generation runs in the API container, and Fastify tracks active Angular preview processes in memory. Supabase remains authoritative for project and job state.
 

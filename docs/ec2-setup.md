@@ -1,18 +1,18 @@
-# Amazon Lightsail setup
+# Amazon EC2 setup
 
-This deploys `pi-robot` as a Docker Compose stack on one dedicated Lightsail Ubuntu instance. Nginx is the public entry point; Fastify, Pi jobs, and Angular previews stay inside Docker.
+This deploys `pi-robot` as a Docker Compose stack on one dedicated EC2 Ubuntu instance. Nginx is the public entry point; Fastify, Pi jobs, and Angular previews stay inside Docker.
 
 > Pi jobs share the API container. Do not run unrelated workloads or keep unrelated host credentials on this instance.
 
 ## 1. SSH into the instance
 
-Create an Ubuntu Lightsail instance, attach a static IP, and allow only TCP 22, 80, and 443 in its Lightsail firewall. Restrict port 22 to your office or VPN IP where possible. Do not open port 3000 or ports 4200–4299.
+Create an Ubuntu EC2 instance, attach an Elastic IP, and allow only TCP 22, 80, and 443 in its EC2 Security Group. Restrict port 22 to your office or VPN IP where possible. Do not open port 3000 or ports 4200–4299.
 
 From your workstation:
 
 ```bash
-chmod 600 ~/Downloads/LightsailDefaultKey-us-east-1.pem
-ssh -i ~/Downloads/LightsailDefaultKey-us-east-1.pem ubuntu@YOUR_STATIC_IP
+chmod 600 ~/Downloads/ec2-key.pem
+ssh -i ~/Downloads/ec2-key.pem ubuntu@YOUR_EC2_ELASTIC_IP
 ```
 
 Update the host and reconnect after the reboot:
@@ -121,10 +121,10 @@ R2 remains private. The application uses short-lived signed URLs for downloads.
 
 ## 7. Configure DNS and TLS
 
-Attach a static IP to the Lightsail instance. Create an `A` record for the hostname used by `PUBLIC_BASE_URL`:
+Attach an Elastic IP to the EC2 instance. Create an `A` record for the hostname used by `PUBLIC_BASE_URL`:
 
 ```text
-pi.example.com.  A  YOUR_LIGHTSAIL_STATIC_IP
+pi.example.com.  A  YOUR_EC2_ELASTIC_IP
 ```
 
 Wait for DNS before enabling HTTPS:

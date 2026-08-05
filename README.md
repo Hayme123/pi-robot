@@ -69,11 +69,11 @@ curl -X POST http://localhost:3000/project/prompt \
 
 Project metadata, preview state, and job progress are stored in Supabase. Set `SUPABASE_SECRET_KEY` to a server-only secret key with write access to `projects` and `jobs`.
 
-Get all projects, or one project, with their available job statuses:
+Get project names and update timestamps, or one project with its available job statuses:
 
 ```bash
 curl http://localhost:3000/projects
-# {"projects":[{"project_name":"landing-page","statuses":{"setup":{"status":"completed","updated_at":"..."}}}]}
+# {"projects":[{"project_name":"landing-page","updated_at":"..."}]}
 
 curl http://localhost:3000/project/landing-page
 # {"project_name":"landing-page","statuses":{"setup":{"status":"completed","updated_at":"..."}}}

@@ -31,24 +31,24 @@ robot-web Express BFF
   |-- serves public project reads and previews
   |-- validates Supabase sessions for mutations
   |-- forwards user JWT ---> pi-robot Fastify
-  `-- proxies Lightsail-hosted preview responses
+  `-- proxies EC2-hosted preview responses
 
 pi-robot Fastify
   |-- metadata/status -----> Supabase Postgres
   |-- project artifacts ---> Cloudflare R2
-  `-- execution -----------> API container on Amazon Lightsail
+  `-- execution -----------> API container on Amazon EC2
                                |-- Pi + Angular build
                                `-- Nginx ---> Angular preview process
 ```
 
-There is no durable project storage on either application host. R2 is the file source of truth, Supabase is the metadata/status source of truth, and Lightsail workspaces are disposable. A single dedicated Lightsail instance runs the complete `pi-robot` Compose stack; Pi jobs share the API container.
+There is no durable project storage on either application host. R2 is the file source of truth, Supabase is the metadata/status source of truth, and EC2 workspaces are disposable. A single dedicated EC2 instance runs the complete `pi-robot` Compose stack; Pi jobs share the API container.
 
 ## Delivery assumptions
 
 - Two-week sprints.
 - Projects, jobs, source manifests, downloads, and previews are readable by anyone.
 - Supabase Auth is required only for creating or modifying projects.
-- The Angular BFF remains; the browser does not call Fastify, R2, or the Lightsail host directly.
+- The Angular BFF remains; the browser does not call Fastify, R2, or the EC2 host directly.
 - Anonymous and authenticated browsers may connect directly to Supabase Realtime.
 - Existing route URLs and UI domain models remain stable where practical.
 - Existing local projects are migrated before local storage is removed.
@@ -66,8 +66,8 @@ Replace placeholder authentication and define contracts shared by both repositor
 - Create staging and production Supabase projects.
 - Create private staging and production R2 buckets.
 - Create least-privilege R2 credentials for Fastify only.
-- Create staging and production Amazon Lightsail instances with static IPs, restricted firewalls, Docker, and Compose.
-- Point deployment domains at the static IPs and configure Nginx TLS certificates.
+- Create staging and production Amazon EC2 instances with Elastic IPs, restricted Security Groups, Docker, and Compose.
+- Point deployment domains at the Elastic IPs and configure Nginx TLS certificates.
 - Deploy the complete `pi-robot` repository as a Compose stack, with only Nginx exposing ports 80 and 443.
 - Store model-provider, Pi, Supabase, and R2 credentials in host-managed environment files readable only by the deployment user.
 - Separate staging and production instances and secrets.
@@ -257,15 +257,15 @@ Make R2 the only durable project file store while preserving the current code vi
 
 ---
 
-## Sprint 4 — Lightsail job runtime
+## Sprint 4 — EC2 job runtime
 
 ### Goal
 
-Deploy the complete `pi-robot` stack to Lightsail and run Pi directly inside the API container.
+Deploy the complete `pi-robot` stack to EC2 and run Pi directly inside the API container.
 
 ### Runtime image
 
-- Build the API image on the Lightsail host through Docker Compose.
+- Build the API image on the EC2 host through Docker Compose.
 - Include Node, Pi, Chromium, zip/unzip, Prettier, skills, and safe Pi settings.
 - Bake Angular dependencies into `/opt/angular-deps` using build secrets for the private Pantry registry.
 - Mount `.pi-agent` at runtime; exclude its credentials, `.env`, and host secrets from generated folders and R2 archives.
@@ -277,7 +277,7 @@ Deploy the complete `pi-robot` stack to Lightsail and run Pi directly inside the
 - Restore the complete project folder from R2 when it is absent locally.
 - Run generation through the existing functions in `src/services/pi.ts`.
 - Upload the complete folder to R2 after each successful generation stage before marking that stage complete.
-- Keep mutation routes authenticated and run the stack only on a dedicated Lightsail instance because jobs share one API container.
+- Keep mutation routes authenticated and run the stack only on a dedicated EC2 instance because jobs share one API container.
 - Delete only R2-synced local folders older than 24 hours, skipping active generation and preview projects.
 
 ### `robot-web`
@@ -289,18 +289,18 @@ Deploy the complete `pi-robot` stack to Lightsail and run Pi directly inside the
 
 ### Acceptance criteria
 
-- Pi, its bash tools, Angular builds, and Prettier execute inside the Lightsail API container without Modal.
+- Pi, its bash tools, Angular builds, and Prettier execute inside the EC2 API container without Modal.
 - Credentials and excluded build/dependency files never enter R2 archives.
 - `PromptComposerComponent` and `RunComponent` display progress through Supabase Realtime.
 - Failed jobs preserve the previous active artifact.
 
 ---
 
-## Sprint 5 — Lightsail previews and inspector proxy
+## Sprint 5 — EC2 previews and inspector proxy
 
 ### Goal
 
-Move previews behind the Lightsail Nginx ingress without losing the same-origin inspector or comment workflow.
+Move previews behind the EC2 Nginx ingress without losing the same-origin inspector or comment workflow.
 
 ### `pi-robot`
 
@@ -341,7 +341,7 @@ Move previews behind the Lightsail Nginx ingress without losing the same-origin 
 
 ### Acceptance criteria
 
-- Nginx serves the Lightsail preview while the robot-web BFF still injects the inspector.
+- Nginx serves the EC2 preview while the robot-web BFF still injects the inspector.
 - Element and code comments continue to create valid revision requests.
 - The iframe never receives an API, R2, Supabase, Pi, or host credential.
 - Fastify and robot-web can both restart without losing preview metadata.
@@ -375,7 +375,7 @@ Remove compatibility paths, migrate existing data, and prove cloud recovery.
 - Dry-run the local-project migration.
 - Compare project counts, archive hashes, file manifests, and revision requests.
 - Migrate production projects and keep local files read-only during the rollback window.
-- Switch reads to Supabase/R2 and execution to the Lightsail Compose stack.
+- Switch reads to Supabase/R2 and execution to the EC2 Compose stack.
 - Remove project volume mounts only after verification.
 - Add stale-job, expired-preview, and orphan-artifact reconciliation.
 - Add R2 lifecycle rules for abandoned failed-job artifacts.
@@ -397,12 +397,12 @@ Remove compatibility paths, migrate existing data, and prove cloud recovery.
 | Endpoint | Cloud behavior | `robot-web` impact |
 | --- | --- | --- |
 | `POST /project` | Create project/job and persist setup assets. | Existing BFF validation; consume IDs. |
-| `POST /project/:name/html` | Run HTML worker on Lightsail. | No direct UI change. |
-| `POST /project/:name/angular` | Run Angular worker on Lightsail. | No direct UI change. |
-| `POST /project/all` | Run all stages in the Lightsail API container. | Prompt composer consumes project/job IDs. |
-| `POST /project/prompt` | Create and generate on Lightsail. | Prompt composer consumes project/job IDs. |
+| `POST /project/:name/html` | Run HTML worker on EC2. | No direct UI change. |
+| `POST /project/:name/angular` | Run Angular worker on EC2. | No direct UI change. |
+| `POST /project/all` | Run all stages in the EC2 API container. | Prompt composer consumes project/job IDs. |
+| `POST /project/prompt` | Create and generate on EC2. | Prompt composer consumes project/job IDs. |
 | `POST /project/:name/revisions` | Restore R2 artifact and create a new job artifact. | Existing revision UI uses job ID. |
-| `POST /project/:name/run` | Start/reuse a Lightsail Angular preview process behind Nginx. | Status arrives through Realtime. |
+| `POST /project/:name/run` | Start/reuse a EC2 Angular preview process behind Nginx. | Status arrives through Realtime. |
 | `POST /project/:name/stop` | Terminate named preview. | Existing action remains. |
 | `GET /projects` | Read Supabase projects/jobs. | Adapter preserves `ProjectSummary`. |
 | `GET /project/:name` | Read Supabase project/job history. | Adapter preserves revision cards. |

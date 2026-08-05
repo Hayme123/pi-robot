@@ -1,6 +1,6 @@
 # System architecture
 
-The service is a filesystem-backed frontend generation pipeline. Fastify accepts work, Pi agents generate code, and Nginx exposes the API and Angular previews from Amazon Lightsail.
+The service is a filesystem-backed frontend generation pipeline. Fastify accepts work, Pi agents generate code, and Nginx exposes the API and Angular previews from Amazon EC2.
 
 ## Component diagram
 
@@ -8,7 +8,7 @@ The service is a filesystem-backed frontend generation pipeline. Fastify accepts
 External services: Figma, Font Awesome, OpenAI/Codex
                          |
                          v
-API client or frontend --HTTPS--> Nginx (Lightsail, ports 80/443)
+API client or frontend --HTTPS--> Nginx (EC2, ports 80/443)
                                    |-- /api/* ----------------> Fastify :3000
                                    `-- /previews/<port>/* ----> api:<port> (Angular)
                                                                   |
@@ -141,7 +141,7 @@ status_run.json (revision UUID + refreshed URL)
 
 ## Status and observability flow
 
-Background stages update `jobs.stage`, `jobs.status`, and `jobs.progress`. Preview state is stored on `projects`. HTTP snapshots come from Supabase, and clients receive subsequent changes through Supabase Realtime.
+Background stages update `jobs.stage`, `jobs.status`, and `jobs.progress`. Generation is marked complete before the subsequent `persist` stage archives and uploads its artifacts. Preview state is stored on `projects`. HTTP snapshots come from Supabase, and clients receive subsequent changes through Supabase Realtime.
 
 ## Project filesystem
 
@@ -169,10 +169,10 @@ projects/
 
 `GET /project/:name/files` omits dependencies, build output, binary files, and `.env`. `GET /project/:name/download` streams a ZIP with the same generated/build directories excluded.
 
-## Planned Amazon Lightsail deployment boundary
+## Planned Amazon EC2 deployment boundary
 
 ```text
-Amazon Lightsail instance
+Amazon EC2 instance
 +----------------------------------------------------------------+
 | Docker Compose                                                  |
 |                                                                |
@@ -189,4 +189,4 @@ Amazon Lightsail instance
 
 The Docker image installs the scaffold lockfile once at `/opt/angular-deps`; generated projects symlink their `node_modules` to that immutable image directory. Existing per-project dependencies are reused, and non-Docker development falls back to a local npm install.
 
-Each Pi session receives a project-specific working directory inside the API container, but jobs are not isolated from one another. Run the stack only on a dedicated Lightsail instance, expose only Nginx, require authentication for mutations, and never place host credentials in generated workspaces or R2 archives.
+Each Pi session receives a project-specific working directory inside the API container, but jobs are not isolated from one another. Run the stack only on a dedicated EC2 instance, expose only Nginx, require authentication for mutations, and never place host credentials in generated workspaces or R2 archives.
