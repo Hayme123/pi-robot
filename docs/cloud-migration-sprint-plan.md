@@ -266,7 +266,7 @@ Deploy the complete `pi-robot` stack to EC2 and run Pi directly inside the API c
 ### Runtime image
 
 - Build the API image on the EC2 host through Docker Compose.
-- Include Node, Pi, Chromium, zip/unzip, Prettier, skills, and safe Pi settings.
+- Include Node, Pi, zip/unzip, Prettier, skills, and safe Pi settings.
 - Bake Angular dependencies into `/opt/angular-deps` using build secrets for the private Pantry registry.
 - Mount `.pi-agent` at runtime; exclude its credentials, `.env`, and host secrets from generated folders and R2 archives.
 - Pin external image versions.
