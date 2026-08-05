@@ -14,6 +14,14 @@ npm run dev
 
 R2 stores the complete project folder after each successful generation stage. Local folders are cache only: synced folders older than 24 hours are deleted daily and restored from the current `workspace.zip` when a later HTML, Angular, revision, or run request needs them.
 
+On Windows, install Cloudflared and set `PREVIEW_MODE=cloudflare` before starting the API. Each project run then creates its own public tunnel without Nginx:
+
+```powershell
+winget install --id Cloudflare.cloudflared
+$env:PREVIEW_MODE = "cloudflare"
+npm run dev
+```
+
 ## Amazon Lightsail deployment
 
 The deployment target is one Amazon Lightsail instance running the complete `pi-robot` Docker Compose stack. Pi generation and Angular previews run inside the API container; Modal is no longer part of the architecture.

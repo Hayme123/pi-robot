@@ -113,6 +113,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     for (const project of projects) {
       if (project.status === "fulfilled") {
         project.value.angular.kill();
+        project.value.tunnel?.kill();
         await project.value.restoreBaseHref();
       }
     }
@@ -669,8 +670,9 @@ async function stopTrackedPreview(projectName: string, runningProjects: Map<stri
   const running = runningProjects.get(projectName);
   if (!running) return;
   runningProjects.delete(projectName);
-  const { angular, restoreBaseHref } = await running;
+  const { angular, tunnel, restoreBaseHref } = await running;
   angular.kill();
+  tunnel?.kill();
   await restoreBaseHref();
 }
 
@@ -679,7 +681,7 @@ function runProjectTask(projectName: string, activeProjects: Set<string>, task: 
   void task().finally(() => activeProjects.delete(projectName));
 }
 
-type RunningProject = { angular: ChildProcess; url: string; restoreBaseHref: () => Promise<void> };
+type RunningProject = { angular: ChildProcess; tunnel?: ChildProcess; url: string; restoreBaseHref: () => Promise<void> };
 
 function ensureRunningProject(
   projectName: string,
@@ -695,10 +697,18 @@ function ensureRunningProject(
   const current = running;
   const forget = () => runningProjects.get(projectName) === current && runningProjects.delete(projectName);
   void current
-    .then(({ angular }) => angular.once("exit", (code, signal) => {
-      log.warn({ projectName, code, signal }, "Angular process stopped");
-      forget();
-    }))
+    .then(({ angular, tunnel }) => {
+      angular.once("exit", (code, signal) => {
+        tunnel?.kill();
+        log.warn({ projectName, code, signal }, "Angular process stopped");
+        forget();
+      });
+      tunnel?.once("exit", (code, signal) => {
+        angular.kill();
+        log.warn({ projectName, code, signal }, "Cloudflare tunnel stopped");
+        forget();
+      });
+    })
     .catch(forget);
   return running;
 }
@@ -707,13 +717,20 @@ async function startAngularPreview(angularDir: string, log: FastifyBaseLogger): 
   const port = await getFreePreviewPort();
   log.info({ angularDir, port }, "Starting Angular development server");
   const ng = path.join(angularDir, "node_modules", ".bin", process.platform === "win32" ? "ng.cmd" : "ng");
-  const restoreBaseHref = await setPreviewBaseHref(angularDir, port);
+  const cloudflare = config.previewMode === "cloudflare";
+  const restoreBaseHref = await setPreviewBaseHref(angularDir, cloudflare ? "/" : `/previews/${port}/`);
   const angular = spawn(ng, ["serve", "--host", "0.0.0.0", "--port", String(port), "--allowed-hosts", "--poll", "1000"], { cwd: angularDir });
   angular.stdout?.on("data", (chunk) => log.debug({ output: String(chunk).trim() }, "Angular output"));
   angular.stderr?.on("data", (chunk) => log.debug({ output: String(chunk).trim() }, "Angular error output"));
 
   try {
-    await waitForUrl(`http://127.0.0.1:${port}`, angular, 120_000);
+    const localUrl = `http://127.0.0.1:${port}`;
+    await waitForUrl(localUrl, angular, 120_000);
+    if (cloudflare) {
+      const { tunnel, url } = await startCloudflareTunnel(localUrl, log);
+      log.info({ port, url }, "Angular preview is ready through Cloudflare");
+      return { angular, tunnel, url, restoreBaseHref };
+    }
     const url = new URL(`/previews/${port}/`, config.publicBaseUrl).toString();
     log.info({ port, url }, "Angular preview is ready behind Nginx");
     return { angular, url, restoreBaseHref };
@@ -724,13 +741,51 @@ async function startAngularPreview(angularDir: string, log: FastifyBaseLogger): 
   }
 }
 
-async function setPreviewBaseHref(angularDir: string, port: number): Promise<() => Promise<void>> {
+async function startCloudflareTunnel(localUrl: string, log: FastifyBaseLogger): Promise<{ tunnel: ChildProcess; url: string }> {
+  const tunnel = spawn("cloudflared", ["tunnel", "--url", localUrl], { windowsHide: true });
+  const url = await new Promise<string>((resolve, reject) => {
+    let output = "";
+    const timeout = setTimeout(() => reject(new Error("Cloudflare tunnel did not provide a public URL in time")), 30_000);
+    const onData = (chunk: Buffer) => {
+      const line = String(chunk);
+      output += line;
+      log.debug({ output: line.trim() }, "Cloudflare output");
+      const url = extractCloudflareUrl(output);
+      if (url) {
+        clearTimeout(timeout);
+        tunnel.stdout?.off("data", onData);
+        tunnel.stderr?.off("data", onData);
+        resolve(url);
+      }
+    };
+    tunnel.stdout?.on("data", onData);
+    tunnel.stderr?.on("data", onData);
+    tunnel.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    tunnel.once("exit", (code) => {
+      clearTimeout(timeout);
+      reject(new Error(`Cloudflare tunnel stopped before it was ready (exit ${code})`));
+    });
+  }).catch((error) => {
+    tunnel.kill();
+    throw error;
+  });
+  return { tunnel, url };
+}
+
+export function extractCloudflareUrl(output: string): string | undefined {
+  return output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)?.[0];
+}
+
+async function setPreviewBaseHref(angularDir: string, baseHref: string): Promise<() => Promise<void>> {
   const angularJson = path.join(angularDir, "angular.json");
   const original = await readFile(angularJson, "utf8");
   const workspace = JSON.parse(original) as { projects: Record<string, { architect: { build: { options: Record<string, unknown> } } }> };
   const project = Object.values(workspace.projects)[0];
   if (!project) throw new Error("Angular workspace has no project");
-  project.architect.build.options.baseHref = `/previews/${port}/`;
+  project.architect.build.options.baseHref = baseHref;
   await writeFile(angularJson, `${JSON.stringify(workspace, null, 2)}\n`);
   return () => writeFile(angularJson, original);
 }
