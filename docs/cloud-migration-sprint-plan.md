@@ -38,7 +38,7 @@ pi-robot Fastify
   |-- project artifacts ---> Cloudflare R2
   `-- execution -----------> API container on Amazon EC2
                                |-- Pi + Angular build
-                               `-- Nginx ---> Angular preview process
+                               `-- Cloudflare Quick Tunnel ---> Angular preview process
 ```
 
 There is no durable project storage on either application host. R2 is the file source of truth, Supabase is the metadata/status source of truth, and EC2 workspaces are disposable. A single dedicated EC2 instance runs the complete `pi-robot` Compose stack; Pi jobs share the API container.
@@ -66,9 +66,8 @@ Replace placeholder authentication and define contracts shared by both repositor
 - Create staging and production Supabase projects.
 - Create private staging and production R2 buckets.
 - Create least-privilege R2 credentials for Fastify only.
-- Create staging and production Amazon EC2 instances with Elastic IPs, restricted Security Groups, Docker, and Compose.
-- Point deployment domains at the Elastic IPs and configure Nginx TLS certificates.
-- Deploy the complete `pi-robot` repository as a Compose stack, with only Nginx exposing ports 80 and 443.
+- Create staging and production Amazon EC2 instances with restricted Security Groups, Docker, and Compose.
+- Deploy the complete `pi-robot` repository as a Compose stack; previews use Cloudflare Quick Tunnels and no inbound HTTP ports.
 - Store model-provider, Pi, Supabase, and R2 credentials in host-managed environment files readable only by the deployment user.
 - Separate staging and production instances and secrets.
 
@@ -300,15 +299,15 @@ Deploy the complete `pi-robot` stack to EC2 and run Pi directly inside the API c
 
 ### Goal
 
-Move previews behind the EC2 Nginx ingress without losing the same-origin inspector or comment workflow.
+Move previews through Cloudflare Quick Tunnels without losing the same-origin inspector or comment workflow.
 
 ### `pi-robot`
 
 - Restore the current R2 project folder when it is absent locally.
 - Run Angular on an available port from `4200` through `4299` inside the API container.
 - Verify readiness before publishing the preview URL.
-- Let Nginx route `/previews/<port>/` to the matching private API-container port, including WebSocket upgrades.
-- Store preview status, Nginx URL, error, and expiration on `projects`.
+- Start a Cloudflare Quick Tunnel to the matching private API-container port, including WebSocket support.
+- Store preview status, Cloudflare URL, error, and expiration on `projects`.
 - Keep API, R2, Supabase, Pi, TLS, and host credentials out of generated project folders.
 - Implement `/run` and `/stop` through tracked Angular child processes.
 - Replace the preview after a successful revision.
@@ -335,13 +334,13 @@ Move previews behind the EC2 Nginx ingress without losing the same-origin inspec
 
 ### Cleanup
 
-- Remove `cloudflared` and tunnel URL parsing from `pi-robot`.
-- Allocate preview ports only from `4200` through `4299`, use Angular process handles as runtime handles, and use Nginx paths as public URLs.
+- Remove the reverse-proxy service, configuration, and path-based preview URLs from `pi-robot`.
+- Allocate preview ports only from `4200` through `4299`, track Angular and Cloudflared process handles, and use Quick Tunnel URLs as public URLs.
 - Do not remove the frontend preview proxy.
 
 ### Acceptance criteria
 
-- Nginx serves the EC2 preview while the robot-web BFF still injects the inspector.
+- Cloudflare serves the EC2 preview while the robot-web BFF still injects the inspector.
 - Element and code comments continue to create valid revision requests.
 - The iframe never receives an API, R2, Supabase, Pi, or host credential.
 - Fastify and robot-web can both restart without losing preview metadata.
@@ -402,13 +401,13 @@ Remove compatibility paths, migrate existing data, and prove cloud recovery.
 | `POST /project/all` | Run all stages in the EC2 API container. | Prompt composer consumes project/job IDs. |
 | `POST /project/prompt` | Create and generate on EC2. | Prompt composer consumes project/job IDs. |
 | `POST /project/:name/revisions` | Restore R2 artifact and create a new job artifact. | Existing revision UI uses job ID. |
-| `POST /project/:name/run` | Start/reuse a EC2 Angular preview process behind Nginx. | Status arrives through Realtime. |
+| `POST /project/:name/run` | Start/reuse an EC2 Angular preview process through Cloudflare. | Status arrives through Realtime. |
 | `POST /project/:name/stop` | Terminate named preview. | Existing action remains. |
 | `GET /projects` | Read Supabase projects/jobs. | Adapter preserves `ProjectSummary`. |
 | `GET /project/:name` | Read Supabase project/job history. | Adapter preserves revision cards. |
 | `GET /project/:name/files` | Read current R2 `files.json`. | Existing source viewer remains. |
 | `GET /project/:name/download` | Redirect to signed R2 download. | Stop buffering ZIP in browser/BFF. |
-| `GET /project/:name/preview-url` | Return the active Nginx preview URL. | Called by preview BFF only. |
+| `GET /project/:name/preview-url` | Return the active Cloudflare preview URL. | Called by preview BFF only. |
 | `/ws/projects/:name` | Removed after cutover. | Replaced inside `ProjectEventsService`. |
 | `/preview/:name/*` | Continue proxying and injecting inspector. | Must remain. |
 

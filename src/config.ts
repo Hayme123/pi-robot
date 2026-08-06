@@ -8,8 +8,6 @@ import path from "node:path";
 export const config = {
   host: process.env.HOST ?? "0.0.0.0",
   port: Number(process.env.PORT ?? 3000),
-  publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "http://localhost:8080",
-  previewMode: process.env.PREVIEW_MODE ?? "nginx",
   projectsRoot: path.resolve(process.env.PROJECTS_ROOT ?? "./projects"),
   scaffoldArchive: process.env.SCAFFOLD_ARCHIVE ?? path.resolve("scaffolds/frontend-scaffold.zip"),
   angularNodeModules: process.env.ANGULAR_NODE_MODULES && path.resolve(process.env.ANGULAR_NODE_MODULES),
@@ -49,16 +47,10 @@ export function validateConfig(): void {
   const missing = Object.entries(required).filter(([, value]) => !value.trim()).map(([name]) => name);
   if (missing.length) throw new Error(`Missing required configuration: ${missing.join(", ")}`);
   if (!Number.isInteger(config.port) || config.port < 1 || config.port > 65535) throw new Error("PORT must be an integer from 1 to 65535");
-  if (!["nginx", "cloudflare"].includes(config.previewMode)) throw new Error("PREVIEW_MODE must be nginx or cloudflare");
   if (!Number.isInteger(config.r2.signedUrlTtlSeconds) || config.r2.signedUrlTtlSeconds < 1 || config.r2.signedUrlTtlSeconds > 3600) throw new Error("R2_SIGNED_URL_TTL_SECONDS must be an integer from 1 to 3600");
   try {
     new URL(config.supabase.url);
   } catch {
     throw new Error("SUPABASE_URL must be a valid URL");
-  }
-  try {
-    new URL(config.publicBaseUrl);
-  } catch {
-    throw new Error("PUBLIC_BASE_URL must be a valid URL");
   }
 }

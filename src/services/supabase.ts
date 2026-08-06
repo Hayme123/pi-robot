@@ -162,7 +162,7 @@ export async function updateJobStatus(projectName: string, stage: ProjectStage, 
  * @returns {Promise<void>} Resolves after Supabase persists the preview state.
  *
  * @example
- * await updatePreview("marketing-site", { status: "completed", url: "http://localhost:8080/previews/4200/" });
+ * await updatePreview("marketing-site", { status: "completed", url: "https://random-name.trycloudflare.com" });
  */
 export async function updatePreview(projectName: string, status: JobStatus): Promise<void> {
   const updatedAt = new Date().toISOString();

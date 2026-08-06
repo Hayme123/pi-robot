@@ -14,11 +14,10 @@ npm run dev
 
 R2 stores the complete project folder after each successful generation stage. Local folders are cache only: synced folders older than 24 hours are deleted daily and restored from the current `workspace.zip` when a later HTML, Angular, revision, or run request needs them.
 
-On Windows, install Cloudflared and set `PREVIEW_MODE=cloudflare` before starting the API. Each project run then creates its own public tunnel without Nginx:
+For local development, install Cloudflared before starting the API. Each project preview gets its own Cloudflare Quick Tunnel:
 
 ```powershell
 winget install --id Cloudflare.cloudflared
-$env:PREVIEW_MODE = "cloudflare"
 npm run dev
 ```
 
@@ -26,13 +25,13 @@ npm run dev
 
 The deployment target is one Amazon Lightsail instance running the complete `pi-robot` Docker Compose stack. Pi generation and Angular previews run inside the API container; Modal is no longer part of the architecture.
 
-Provision Docker and Compose, restrict the Lightsail firewall to SSH and Nginx, clone the repository, set `PUBLIC_BASE_URL` in `.env`, and start the stack:
+Provision Docker and Compose, restrict the Lightsail firewall to SSH, then start the stack:
 
 ```bash
 NPM_TOKEN=... docker compose up -d --build
 ```
 
-R2 and Supabase remain the durable stores. Lightsail job workspaces are disposable, and Nginx provides ingress for the API and previews. The included `nginx.conf` listens on port 80; add TLS before production. See [the cloud migration sprint plan](docs/cloud-migration-sprint-plan.md) for the cutover steps.
+R2 and Supabase remain the durable stores. Lightsail job workspaces are disposable. Each Angular preview gets its own Cloudflare Quick Tunnel; no Cloudflare token or inbound HTTP port is required.
 
 ## API
 
@@ -94,11 +93,11 @@ curl http://localhost:3000/project/landing-page/files
 # {"project_name":"landing-page","files":[{"name":"src","path":"src","type":"directory","children":[...]}]}
 ```
 
-Run a generated Angular project behind the Lightsail Nginx ingress:
+Run a generated Angular project through Cloudflare:
 
 ```bash
 curl -X POST http://localhost:3000/project/PROJECT_NAME/run
-# {"project_name":"PROJECT_NAME","url":"https://pi.example.com/previews/4200/"}
+# {"project_name":"PROJECT_NAME","url":"https://random-name.trycloudflare.com"}
 ```
 
 The URL remains available while the Angular preview process is running.
@@ -107,11 +106,11 @@ Run every generated project with installed Angular dependencies in parallel:
 
 ```bash
 curl -X POST http://localhost:3000/projects/run
-# {"projects":[{"project_name":"landing-page","status":"running","url":"https://pi.example.com/previews/4200/"}]}
+# {"projects":[{"project_name":"landing-page","status":"running","url":"https://random-name.trycloudflare.com"}]}
 ```
 
 Incomplete projects are returned as `skipped`; one launch failure does not stop the others.
 
 ## Security
 
-Pi has shell and file-writing access inside the API container. Project jobs are not isolated from one another, so expose only Nginx, require authentication for mutations, and run this stack only on a dedicated Lightsail instance.
+Pi has shell and file-writing access inside the API container. Project jobs are not isolated from one another, so keep the API private, require authentication for mutations, and run this stack only on a dedicated Lightsail instance.

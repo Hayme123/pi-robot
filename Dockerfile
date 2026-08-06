@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.7
+FROM cloudflare/cloudflared:latest AS cloudflared
 FROM node:24-bookworm
 
 WORKDIR /app
 
+COPY --from=cloudflared /usr/local/bin/cloudflared /usr/local/bin/cloudflared
 COPY package.json package-lock.json ./
 RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip zip chromium \
   && rm -rf /var/lib/apt/lists/*

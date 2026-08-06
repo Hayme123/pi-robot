@@ -1,6 +1,6 @@
 # System architecture
 
-The service is a filesystem-backed frontend generation pipeline. Fastify accepts work, Pi agents generate code, and Nginx exposes the API and Angular previews from Amazon EC2.
+The service is a filesystem-backed frontend generation pipeline. Fastify accepts work, Pi agents generate code, and Cloudflare Tunnel exposes the API and Angular previews from Amazon EC2.
 
 ## Component diagram
 
@@ -8,15 +8,15 @@ The service is a filesystem-backed frontend generation pipeline. Fastify accepts
 External services: Figma, Font Awesome, OpenAI/Codex
                          |
                          v
-API client or frontend --HTTPS--> Nginx (EC2, ports 80/443)
-                                   |-- /api/* ----------------> Fastify :3000
-                                   `-- /previews/<port>/* ----> api:<port> (Angular)
+API client --local/optional Quick Tunnel--> Fastify :3000
                                                                   |
 Fastify ----------------------------------------------------------+
   |-- project routes and background orchestration
   |-- Supabase status + Realtime
   |-- R2 project artifacts
   `-- Pi SDK + Angular build in the API container
+                                |
+                                `-- Cloudflare Quick Tunnel --> Angular preview
 ```
 
 The Compose `pi` service uses the same image, projects volume, and `.pi-agent` volume to provide an interactive Pi CLI beside the API service.
@@ -63,8 +63,8 @@ Request
 [4. RUN]
   |-- start Angular: ng serve --host 0.0.0.0 --port <4200-4299> --allowed-hosts
   |-- wait until any HTTP response proves readiness
-  |-- publish /previews/<allocated-port>/ through Nginx
-  `-- status_run.json (stable HTTPS URL)
+  |-- start a Cloudflare Quick Tunnel to the allocated port
+  `-- status_run.json (public HTTPS URL)
           |
           v
 Public Angular preview
@@ -82,7 +82,7 @@ User prompt
     v
 Pi names project -> extract Angular scaffold -> link shared dependencies
     -> Pi builds Angular directly from prompt -> Prettier
-    -> Angular preview process -> Nginx route -> public URL
+    -> Angular preview process -> Cloudflare Quick Tunnel -> public URL
 
 Status files: setup -> angular -> run
 Skipped stage: html (there is no Figma/HTML reference)
@@ -101,7 +101,7 @@ POST /project/:name/angular
     -> existing HTML + image + scaffold -> Angular
 
 POST /project/:name/run
-    -> existing installed Angular workspace -> Angular preview process -> Nginx
+    -> existing installed Angular workspace -> Angular preview process -> Cloudflare Quick Tunnel
 
 POST /projects/run
     -> launch all installed Angular workspaces concurrently; isolate failures
@@ -133,7 +133,7 @@ Fresh Pi agent session
 status_revision.json (revision history)
   |
   v
-restart Angular and refresh its Nginx URL
+restart Angular and refresh its Cloudflare URL
   |
   v
 status_run.json (revision UUID + refreshed URL)
@@ -181,12 +181,12 @@ Amazon EC2 instance
 |         |                                                      |
 |         +--> Pi generation in project-specific workspaces      |
 |         `--> Angular preview processes on ports 4200-4299      |
-|  nginx container: ingress for API and /previews/*               |
+|  cloudflared processes: one Quick Tunnel per Angular preview  |
 |                                                                |
 |  temporary workspaces <--------------> R2 artifacts             |
 +----------------------------------------------------------------+
 ```
 
-The Docker image installs the scaffold lockfile once at `/opt/angular-deps`; generated projects symlink their `node_modules` to that immutable image directory. Existing per-project dependencies are reused, and non-Docker development falls back to a local npm install.
+The Docker image includes `cloudflared` and installs the scaffold lockfile once at `/opt/angular-deps`; generated projects symlink their `node_modules` to that immutable image directory. Existing per-project dependencies are reused, and non-Docker development falls back to a local npm install.
 
-Each Pi session receives a project-specific working directory inside the API container, but jobs are not isolated from one another. Run the stack only on a dedicated EC2 instance, expose only Nginx, require authentication for mutations, and never place host credentials in generated workspaces or R2 archives.
+Each Pi session receives a project-specific working directory inside the API container, but jobs are not isolated from one another. Run the stack only on a dedicated EC2 instance, expose the API only through Cloudflare Tunnel, require authentication for mutations, and never place host credentials in generated workspaces or R2 archives.

@@ -74,7 +74,7 @@ create table public.projects (
 | `name` | User-facing project name, such as `landing-page`. |
 | `current_artifact_prefix` | R2 prefix containing the current project source and file manifest. |
 | `preview_status` | Current EC2 preview state. |
-| `preview_base_url` | Active Nginx preview URL. |
+| `preview_base_url` | Active Cloudflare preview URL. |
 | `preview_error` | Latest preview failure message. |
 | `preview_expires_at` | Expected preview expiration. |
 | `created_at` | Project creation time. |

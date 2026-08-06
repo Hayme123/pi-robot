@@ -1,12 +1,12 @@
 # Amazon EC2 setup
 
-This deploys `pi-robot` as a Docker Compose stack on one dedicated EC2 Ubuntu instance. Nginx is the public entry point; Fastify, Pi jobs, and Angular previews stay inside Docker.
+This deploys `pi-robot` as a Docker Compose stack on one dedicated EC2 Ubuntu instance. Angular previews use Cloudflare Quick Tunnels; Fastify and Pi jobs stay inside Docker.
 
 > Pi jobs share the API container. Do not run unrelated workloads or keep unrelated host credentials on this instance.
 
 ## 1. SSH into the instance
 
-Create an Ubuntu EC2 instance, attach an Elastic IP, and allow only TCP 22, 80, and 443 in its EC2 Security Group. Restrict port 22 to your office or VPN IP where possible. Do not open port 3000 or ports 4200–4299.
+Create an Ubuntu EC2 instance and allow only TCP 22 in its EC2 Security Group. Restrict port 22 to your office or VPN IP where possible. Do not open ports 80, 443, or 4200–4299. Port 3000 is bound to localhost by Compose.
 
 From your workstation:
 
@@ -83,8 +83,6 @@ nano .env
 Set the Figma, Font Awesome, Supabase, R2, and expiration values from `.env.example`. Use container paths in Compose:
 
 ```dotenv
-PUBLIC_BASE_URL=https://pi.example.com
-NGINX_PORT=80
 PROJECTS_ROOT=/workspace/projects
 R2_SIGNED_URL_TTL_SECONDS=300
 EXPIRY_CRON_SECRET=REPLACE_WITH_A_RANDOM_VALUE
@@ -119,21 +117,9 @@ Do not use an npmjs.com token, a GitHub token, or a placeholder. The credential 
 
 R2 remains private. The application uses short-lived signed URLs for downloads.
 
-## 7. Configure DNS and TLS
+## 7. Quick Tunnels
 
-Attach an Elastic IP to the EC2 instance. Create an `A` record for the hostname used by `PUBLIC_BASE_URL`:
-
-```text
-pi.example.com.  A  YOUR_EC2_ELASTIC_IP
-```
-
-Wait for DNS before enabling HTTPS:
-
-```bash
-getent hosts pi.example.com
-```
-
-The included Nginx config listens on HTTP. Add TLS at Nginx or terminate TLS through a trusted reverse proxy/CDN before production traffic. Set `PUBLIC_BASE_URL` to the actual HTTPS URL only after HTTPS works.
+No Cloudflare account, domain, or token is required. The API starts one Quick Tunnel for each Angular preview using the `cloudflared` binary included in the Docker image. Each run returns a temporary `https://*.trycloudflare.com` URL.
 
 ## 8. Build and start
 
@@ -144,32 +130,28 @@ docker compose build --no-cache
 docker compose up -d
 docker compose ps
 docker compose logs --tail=100 api
-docker compose logs --tail=100 nginx
 ```
 
-Validate Nginx and the health endpoint locally:
+Validate the health endpoint locally:
 
 ```bash
-docker compose exec nginx nginx -t
-curl -i http://127.0.0.1/health
+curl -i http://127.0.0.1:3000/health
 ```
 
-If `NGINX_PORT` is not `80`, use that port in the curl command.
-
-Nginx sends regular requests to Fastify and proxies `/previews/4200/` through `/previews/4299/` to Angular development servers inside the API container.
+Project runs start separate Cloudflare Quick Tunnels to Angular development servers inside the API container.
 
 ## 9. Verify externally
 
 From your workstation:
 
 ```bash
-curl -i https://pi.example.com/health
+curl -i http://127.0.0.1:3000/health
 ```
 
 Use an authenticated API request to create or run a project. A running preview URL looks like:
 
 ```text
-https://pi.example.com/previews/4200/
+https://random-name.trycloudflare.com
 ```
 
 Check that the preview loads and that Angular live reload works through the public hostname.
@@ -190,7 +172,6 @@ docker compose ps
 
 ```bash
 docker compose logs -f api
-docker compose logs -f nginx
 docker compose restart
 docker compose down
 ```
@@ -203,16 +184,3 @@ Stopping Compose stops active previews. Project folders are local cache; complet
 - Back up secrets through encrypted secret management, never Git or R2 project archives.
 - Rotate provider, Supabase, R2, registry, and cron credentials after exposure.
 - Apply Ubuntu updates regularly and rebuild after dependency updates.
-
-
-```yaml
-   api:
-     ports:
-       - "80:3000"
- ```
-
- Then restart:
-
- ```bash
-   docker compose up -d --force-recreate api
- ```
