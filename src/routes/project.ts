@@ -106,16 +106,115 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
   await stopActivePreviews();
   const runningProjects = new Map<string, Promise<RunningProject>>();
   const activeProjects = new Set<string>();
+  const tunnelPool: TunnelPoolEntry[] = [];
+  const reservedPreviewPorts = new Set<number>();
+  const maxTunnelPoolSize = 5;
+  const tunnelCreationIntervalMs = 120_000;
+  let lastTunnelCreatedAt = 0;
+  let wakeTunnelPool: (() => void) | undefined;
+  const tunnelPoolWaiters = new Set<() => void>();
+  let fillingTunnelPool: Promise<void> | undefined;
+  let closing = false;
+
+  const fillTunnelPool = async (): Promise<void> => {
+    if (closing || fillingTunnelPool) return fillingTunnelPool;
+    fillingTunnelPool = (async () => {
+      while (!closing && tunnelPool.length < maxTunnelPoolSize) {
+        const wait = lastTunnelCreatedAt + tunnelCreationIntervalMs - Date.now();
+        if (wait > 0) {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              wakeTunnelPool = undefined;
+              resolve();
+            }, wait);
+            wakeTunnelPool = () => {
+              clearTimeout(timer);
+              wakeTunnelPool = undefined;
+              resolve();
+            };
+          });
+        }
+        if (closing) return;
+        const port = await getFreePreviewPort(reservedPreviewPorts);
+        reservedPreviewPorts.add(port);
+        lastTunnelCreatedAt = Date.now();
+        const promise = startCloudflareTunnel(`http://127.0.0.1:${port}`, app.log, false).then(({ tunnel, url }) => {
+          app.log.info(`Quick Tunnel pool slot ready (port: ${port}, URL: ${url})`);
+          return { port, tunnel, url };
+        });
+        const entry = { port, promise };
+        tunnelPool.push(entry);
+        for (const notify of tunnelPoolWaiters) notify();
+        tunnelPoolWaiters.clear();
+        void promise.catch((error) => {
+          const index = tunnelPool.indexOf(entry);
+          if (index < 0) return;
+          tunnelPool.splice(index, 1);
+          reservedPreviewPorts.delete(port);
+          app.log.error({ error, port }, "Prewarmed Quick Tunnel failed");
+          void fillTunnelPool();
+        });
+      }
+    })().finally(() => {
+      fillingTunnelPool = undefined;
+    });
+    return fillingTunnelPool;
+  };
+
+  const claimTunnel = async (log: FastifyBaseLogger): Promise<PreviewTunnel> => {
+    while (!closing) {
+      const entry = tunnelPool.shift();
+      if (!entry) {
+        const nextSlot = new Promise<void>((resolve) => tunnelPoolWaiters.add(resolve));
+        void fillTunnelPool();
+        await nextSlot;
+        continue;
+      }
+      try {
+        const tunnel = await entry.promise;
+        void fillTunnelPool();
+        return tunnel;
+      } catch (error) {
+        reservedPreviewPorts.delete(entry.port);
+        log.error({ error, port: entry.port }, "Quick Tunnel pool slot failed");
+      }
+    }
+    throw new Error("Quick Tunnel pool is shutting down");
+  };
+
+  const releasePreviewPort = (port: number): void => {
+    reservedPreviewPorts.delete(port);
+    void fillTunnelPool();
+  };
+
+  const startPreview = (angularDir: string, log: FastifyBaseLogger) =>
+    startAngularPreview(angularDir, log, claimTunnel, releasePreviewPort);
+
+  const runningTests = process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT) || process.execArgv.includes("--test") || process.argv.some((arg) => arg.endsWith(".test.mjs") || arg.endsWith(".test.js"));
+  if (!runningTests) {
+    app.log.info({ maxTunnelPoolSize, tunnelCreationIntervalMs }, "Warming Quick Tunnel pool sequentially");
+    void fillTunnelPool();
+  }
 
   app.addHook("onClose", async () => {
+    closing = true;
+    wakeTunnelPool?.();
+    for (const notify of tunnelPoolWaiters) notify();
+    tunnelPoolWaiters.clear();
+    app.log.info({ runningProjects: runningProjects.size, tunnelPool: tunnelPool.length }, "Stopping project processes and Quick Tunnel pool");
     app.log.info({ runningProjects: runningProjects.size }, "Stopping project processes");
     const projects = await Promise.allSettled(runningProjects.values());
     for (const project of projects) {
       if (project.status === "fulfilled") {
         project.value.angular.kill();
-        project.value.tunnel?.kill();
+        project.value.tunnel.kill();
         await project.value.restoreBaseHref();
       }
+    }
+    if (fillingTunnelPool) await fillingTunnelPool;
+    const slots = await Promise.allSettled(tunnelPool.map(({ promise }) => promise));
+    for (const slot of slots) {
+      if (slot.status === "fulfilled") slot.value.tunnel.kill();
     }
   });
 
@@ -216,7 +315,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         writeFailure = writeRunStatus;
         await writeRunStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
-        const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
+        const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log, startPreview);
         await writeRunStatus(projectDir, { status: "completed", url });
         app.log.info({ projectName, url }, "Prompt-generated project is publicly available");
       } catch (error) {
@@ -293,7 +392,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         writeFailure = writeRunStatus;
         await writeRunStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
-        const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
+        const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log, startPreview);
         await writeRunStatus(projectDir, { status: "completed", url });
         app.log.info({ projectName, url }, "Full project pipeline completed");
       } catch (error) {
@@ -574,7 +673,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
       await writeRunStatus(projectDir, { status: "processing" });
       try {
-        const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
+        const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log, startPreview);
         await writeRunStatus(projectDir, { status: "completed", url });
         return { project_name: projectName, status: "running", url };
       } catch (error) {
@@ -613,7 +712,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     await renewLocalExpiry(projectName);
     await writeRunStatus(projectDir, { status: "processing" });
     try {
-      const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log);
+      const { url } = await ensureRunningProject(projectName, angularDir, runningProjects, app.log, startPreview);
       await writeRunStatus(projectDir, { status: "completed", url });
       request.log.info({ projectName, url }, "Project is publicly available");
       return { project_name: projectName, url };
@@ -670,9 +769,10 @@ async function stopTrackedPreview(projectName: string, runningProjects: Map<stri
   const running = runningProjects.get(projectName);
   if (!running) return;
   runningProjects.delete(projectName);
-  const { angular, tunnel, restoreBaseHref } = await running;
+  const { angular, tunnel, restoreBaseHref, releasePort } = await running;
   angular.kill();
-  tunnel?.kill();
+  tunnel.kill();
+  releasePort();
   await restoreBaseHref();
 }
 
@@ -681,30 +781,42 @@ function runProjectTask(projectName: string, activeProjects: Set<string>, task: 
   void task().finally(() => activeProjects.delete(projectName));
 }
 
-type RunningProject = { angular: ChildProcess; tunnel?: ChildProcess; url: string; restoreBaseHref: () => Promise<void> };
+type PreviewTunnel = { port: number; tunnel: ChildProcess; url: string };
+type TunnelPoolEntry = { port: number; promise: Promise<PreviewTunnel> };
+type RunningProject = {
+  angular: ChildProcess;
+  tunnel: ChildProcess;
+  port: number;
+  url: string;
+  releasePort: () => void;
+  restoreBaseHref: () => Promise<void>;
+};
 
 function ensureRunningProject(
   projectName: string,
   angularDir: string,
   runningProjects: Map<string, Promise<RunningProject>>,
   log: FastifyBaseLogger,
+  startPreview: (angularDir: string, log: FastifyBaseLogger) => Promise<RunningProject>,
 ): Promise<RunningProject> {
   let running = runningProjects.get(projectName);
   if (running) return running;
 
-  running = startAngularPreview(angularDir, log);
+  running = startPreview(angularDir, log);
   runningProjects.set(projectName, running);
   const current = running;
   const forget = () => runningProjects.get(projectName) === current && runningProjects.delete(projectName);
   void current
-    .then(({ angular, tunnel }) => {
+    .then(({ angular, tunnel, releasePort }) => {
       angular.once("exit", (code, signal) => {
-        tunnel?.kill();
+        tunnel.kill();
+        releasePort();
         log.warn({ projectName, code, signal }, "Angular process stopped");
         forget();
       });
-      tunnel?.once("exit", (code, signal) => {
+      tunnel.once("exit", (code, signal) => {
         angular.kill();
+        releasePort();
         log.warn({ projectName, code, signal }, "Cloudflare tunnel stopped");
         forget();
       });
@@ -713,38 +825,49 @@ function ensureRunningProject(
   return running;
 }
 
-async function startAngularPreview(angularDir: string, log: FastifyBaseLogger): Promise<RunningProject> {
-  const port = await getFreePreviewPort();
+async function startAngularPreview(
+  angularDir: string,
+  log: FastifyBaseLogger,
+  claimTunnel: (log: FastifyBaseLogger) => Promise<PreviewTunnel>,
+  releasePreviewPort: (port: number) => void,
+): Promise<RunningProject> {
+  const { port, tunnel, url } = await claimTunnel(log);
   log.info({ angularDir, port }, "Starting Angular development server");
   const ng = path.join(angularDir, "node_modules", ".bin", process.platform === "win32" ? "ng.cmd" : "ng");
-  const cloudflare = config.previewMode === "cloudflare";
-  const restoreBaseHref = await setPreviewBaseHref(angularDir, cloudflare ? "/" : `/previews/${port}/`);
-  const angular = spawn(ng, ["serve", "--host", "0.0.0.0", "--port", String(port), "--allowed-hosts", "--poll", "1000"], { cwd: angularDir });
-  angular.stdout?.on("data", (chunk) => log.debug({ output: String(chunk).trim() }, "Angular output"));
-  angular.stderr?.on("data", (chunk) => log.debug({ output: String(chunk).trim() }, "Angular error output"));
+  let restoreBaseHref = async () => {};
+  let angular: ChildProcess | undefined;
+  let released = false;
+  const releasePort = () => {
+    if (released) return;
+    released = true;
+    releasePreviewPort(port);
+  };
 
   try {
+    restoreBaseHref = await setPreviewBaseHref(angularDir, "/");
+    log.info(`Building Angular preview (port: ${port})`);
+    angular = spawn(ng, ["serve", "--host", "0.0.0.0", "--port", String(port), "--allowed-hosts", "--poll", "1000"], { cwd: angularDir });
     const localUrl = `http://127.0.0.1:${port}`;
-    await waitForUrl(localUrl, angular, 120_000);
-    if (cloudflare) {
-      const { tunnel, url } = await startCloudflareTunnel(localUrl, log);
-      log.info({ port, url }, "Angular preview is ready through Cloudflare");
-      return { angular, tunnel, url, restoreBaseHref };
-    }
-    const url = new URL(`/previews/${port}/`, config.publicBaseUrl).toString();
-    log.info({ port, url }, "Angular preview is ready behind Nginx");
-    return { angular, url, restoreBaseHref };
+    await Promise.all([waitForUrl(localUrl, angular, 30_000), waitForUrl(url, tunnel, 30_000)]);
+    log.info(`Angular preview is running (port: ${port}, local URL: ${localUrl})`);
+    log.info(
+      `Angular preview is ready through Cloudflare Quick Tunnel (Angular port: ${port}, tunnel target port: ${port}, URL: ${url})`,
+    );
+    return { angular, tunnel, port, url, releasePort, restoreBaseHref };
   } catch (error) {
-    angular.kill();
+    log.error({ projectUrl: url, angularPort: port, error }, "Preview startup failed; stopping Angular and Cloudflare tunnel");
+    angular?.kill();
+    tunnel.kill();
+    releasePort();
     await restoreBaseHref();
     throw error;
   }
 }
 
-async function startCloudflareTunnel(localUrl: string, log: FastifyBaseLogger): Promise<{ tunnel: ChildProcess; url: string }> {
+async function startCloudflareTunnel(localUrl: string, log: FastifyBaseLogger, waitForPublic = true): Promise<{ tunnel: ChildProcess; url: string }> {
   const tunnel = spawn("cloudflared", ["tunnel", "--url", localUrl], { windowsHide: true });
+  let output = "";
   const url = await new Promise<string>((resolve, reject) => {
-    let output = "";
     const timeout = setTimeout(() => reject(new Error("Cloudflare tunnel did not provide a public URL in time")), 30_000);
     const onData = (chunk: Buffer) => {
       const line = String(chunk);
@@ -770,8 +893,22 @@ async function startCloudflareTunnel(localUrl: string, log: FastifyBaseLogger): 
     });
   }).catch((error) => {
     tunnel.kill();
+    const details = error instanceof Error ? { message: error.message, stack: error.stack } : String(error);
+    log.error({ tunnelTarget: localUrl, error: details, cloudflaredOutput: output.trim() }, "Cloudflare Quick Tunnel exited before providing a URL");
     throw error;
   });
+  if (waitForPublic) {
+    try {
+      await waitForUrl(url, tunnel, 30_000);
+    } catch (error) {
+      const details = error instanceof Error ? { message: error.message, stack: error.stack } : String(error);
+      log.error(
+        { cloudflareUrl: url, tunnelTarget: localUrl, error: details, cloudflaredOutput: output.trim() },
+        "Cloudflare Quick Tunnel URL failed readiness",
+      );
+      throw error;
+    }
+  }
   return { tunnel, url };
 }
 
@@ -790,8 +927,9 @@ async function setPreviewBaseHref(angularDir: string, baseHref: string): Promise
   return () => writeFile(angularJson, original);
 }
 
-async function getFreePreviewPort(): Promise<number> {
+async function getFreePreviewPort(reservedPorts = new Set<number>()): Promise<number> {
   for (let port = 4200; port <= 4299; port++) {
+    if (reservedPorts.has(port)) continue;
     const available = await new Promise<boolean>((resolve) => {
       const server = createServer();
       server.once("error", () => resolve(false));
@@ -805,6 +943,7 @@ async function getFreePreviewPort(): Promise<number> {
 async function waitForUrl(url: string, process: ChildProcess, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let spawnError: Error | undefined;
+  let lastFetchError: Error | undefined;
   const onError = (error: Error) => (spawnError = error);
   process.once("error", onError);
   try {
@@ -814,10 +953,12 @@ async function waitForUrl(url: string, process: ChildProcess, timeoutMs: number)
       try {
         await fetch(url);
         return;
-      } catch {}
+      } catch (error) {
+        lastFetchError = error instanceof Error ? error : new Error(String(error));
+      }
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
-    throw new Error("Angular did not become ready in time");
+    throw new Error(`${url} did not become ready in time${lastFetchError ? ` (${lastFetchError.message})` : ""}`);
   } finally {
     process.off("error", onError);
   }

@@ -17,7 +17,7 @@ export function buildApp() {
       level: process.env.LOG_LEVEL ?? "info",
       transport: {
         target: "pino-pretty",
-        options: { colorize: false, translateTime: false, ignore: "pid,hostname,time,reqId", hideObject: true },
+        options: { colorize: false, translateTime: "SYS:standard", ignore: "pid,hostname,reqId" },
       },
     },
   });
