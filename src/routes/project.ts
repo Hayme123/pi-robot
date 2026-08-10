@@ -9,8 +9,9 @@ import type { FastifyBaseLogger, FastifyPluginAsync } from "fastify";
 import { config } from "../config.js";
 import { authenticate } from "../services/auth.js";
 import { downloadFigmaFrames } from "../services/figma.js";
+import { downloadAttachment } from "../services/attachments.js";
 import { getProjectDownloadUrl, getProjectFiles, persistProjectArtifact, renameProjectArtifacts, restoreProjectWorkspace } from "../services/artifacts.js";
-import { applyProjectRevision, defineProjectName, generateAngularProject, generateProjectHtml, generatePromptProject } from "../services/pi.js";
+import { applyProjectRevision, classifyModal, defineProjectName, generateAngularProject, generateProjectHtml, generatePromptProject, type ModalKind } from "../services/pi.js";
 import { readProjectFiles } from "../services/project-files.js";
 import {
   createProject,
@@ -39,7 +40,7 @@ type CreateProjectBody = {
   node_ids?: string[];
 };
 
-type PromptProjectBody = { prompt?: unknown };
+type PromptProjectBody = { prompt?: unknown; attachment_url?: unknown };
 
 type FigmaFrame = { project_id: string; node_id: string };
 type Interaction = {
@@ -49,11 +50,12 @@ type Interaction = {
 type RevisionComment = Record<string, unknown> & {
   id?: string | number;
   figma_frame?: FigmaFrame;
+  attachment_url?: string;
   interaction?: Interaction;
 };
 
 type ThinkingLevel = "low" | "medium" | "high";
-type Revision = { prompt: string | null; comments: RevisionComment[]; thinking_level: ThinkingLevel };
+type Revision = { prompt: string | null; comments: RevisionComment[]; thinking_level: ThinkingLevel; attachment_url?: string };
 
 type JobStatus = {
   status: "processing" | "completed" | "failed";
@@ -88,7 +90,7 @@ const promptProjectSchema = {
     type: "object",
     additionalProperties: false,
     required: ["prompt"],
-    properties: { prompt: { type: "string" } },
+    properties: { prompt: { type: "string" }, attachment_url: { type: "string", format: "uri" } },
   },
 };
 
@@ -273,8 +275,12 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
   app.post<{ Body: PromptProjectBody }>("/project/prompt", { schema: promptProjectSchema, preHandler: authenticate }, async (request, reply) => {
     const prompt = request.body?.prompt;
+    const attachmentUrl = request.body?.attachment_url;
     if (typeof prompt !== "string" || !prompt.trim()) {
       return reply.code(400).send({ error: "prompt must be a non-empty string" });
+    }
+    if (attachmentUrl !== undefined && !isAttachmentUrl(attachmentUrl)) {
+      return reply.code(400).send({ error: "attachment_url must be an HTTPS URL" });
     }
 
     const existingNames = (await listProjects()).map((project) => project.project_name);
@@ -297,11 +303,15 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
       try {
         await extractScaffold(angularDir, request.log);
         await writeSetupStatus(projectDir, { status: "completed" });
-
         writeFailure = writeAngularStatus;
+        const attachment = attachmentUrl
+          ? await downloadAttachment(attachmentUrl, path.join(projectDir, ".prompt-assets"), "attachment", request.log)
+          : undefined;
+
+
         await writeAngularStatus(projectDir, { status: "processing" });
         await prepareAngularDependencies(angularDir, request.log);
-        const usage = await generatePromptProject(prompt.trim(), angularDir, request.log);
+        const usage = await generatePromptProject(prompt.trim(), angularDir, request.log, attachment);
         await writeAngularStatus(projectDir, {
           status: "completed",
           cost: usage.cost,
@@ -586,33 +596,62 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const revisionId = randomUUID();
-    const projectId = await createRevisionJob(projectName, revisionId, revision as unknown as Record<string, unknown>);
+    const storedRevision = redactAttachmentUrls(revision);
+    const projectId = await createRevisionJob(projectName, revisionId, storedRevision as unknown as Record<string, unknown>);
     const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
-    await writeRevisionStatus(projectDir, { revision_id: revisionId, request: revision, status: "processing" });
+    await writeRevisionStatus(projectDir, { revision_id: revisionId, request: storedRevision as Revision, status: "processing" });
 
     runProjectTask(projectName, activeProjects, async () => {
+      let htmlCost = 0;
       try {
+        const topAttachment = revision.attachment_url
+          ? await downloadAttachment(revision.attachment_url, assetsDir, "prompt-attachment", request.log)
+          : undefined;
         const frameResults = await Promise.all(revision.comments.map(async (comment, index) => {
-          if (!comment.figma_frame) return null;
+          if (!comment.figma_frame && !comment.attachment_url) return null;
           const directory = path.join(assetsDir, String(index));
-          await downloadFigmaFrames(comment.figma_frame.project_id, [comment.figma_frame.node_id], directory, request.log);
-          if (!requiresRevisionHtml(comment.interaction?.presentation)) {
-            return { frame: { commentId: comment.id ?? index, directory }, htmlCost: 0 };
+          const attachment = comment.attachment_url
+            ? await downloadAttachment(comment.attachment_url, directory, "attachment", request.log)
+            : undefined;
+          if (comment.figma_frame) {
+            await downloadFigmaFrames(comment.figma_frame.project_id, [comment.figma_frame.node_id], directory, request.log);
           }
-          const html = await generateProjectHtml(directory, angularDir, request.log);
+          const frameImagePath = path.join(directory, "frame.png");
+          const modalImagePath = attachment?.isImage ? attachment.path : await fileExists(frameImagePath) ? frameImagePath : undefined;
+          const modalKind = comment.interaction?.presentation === "modal" && modalImagePath
+            ? await classifyModal(modalImagePath, request.log)
+            : undefined;
+          if (!requiresRevisionHtml(comment.interaction?.presentation, modalKind)) {
+            return {
+              frame: {
+                commentId: comment.id ?? index,
+                directory,
+                presentation: comment.interaction?.presentation,
+                modalVariant: modalKind,
+                ...(attachment ? { attachmentPath: attachment.path } : {}),
+              },
+            };
+          }
+          const html = await generateProjectHtml(directory, angularDir, request.log, attachment);
+          htmlCost += html.cost;
           return {
-            frame: { commentId: comment.id ?? index, directory, htmlPath: path.join(directory, "index.html") },
-            htmlCost: html.cost,
+            frame: {
+              commentId: comment.id ?? index,
+              directory,
+              presentation: comment.interaction?.presentation,
+              modalVariant: modalKind,
+              ...(attachment ? { attachmentPath: attachment.path } : {}),
+              htmlPath: path.join(directory, "index.html"),
+            },
           };
         }));
         const completedFrames = frameResults.filter((result) => result !== null);
         const figmaFrames = completedFrames.map(({ frame }) => frame);
-        const htmlCost = completedFrames.reduce((total, result) => total + result.htmlCost, 0);
         await prepareAngularDependencies(angularDir, request.log);
-        const usage = await applyProjectRevision(angularDir, revision, figmaFrames, revision.thinking_level, request.log);
+        const usage = await applyProjectRevision(angularDir, revision, figmaFrames, topAttachment, revision.thinking_level, request.log);
         await writeRevisionStatus(projectDir, {
           revision_id: revisionId,
-          request: revision,
+          request: storedRevision as Revision,
           status: "completed",
           cost: htmlCost + usage.cost,
           context_length: usage.contextLength,
@@ -623,7 +662,13 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
         await persistProject(projectName, revisionId, projectDir);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        await writeRevisionStatus(projectDir, { revision_id: revisionId, request: revision, status: "failed", error: message });
+        await writeRevisionStatus(projectDir, {
+          revision_id: revisionId,
+          request: storedRevision as Revision,
+          status: "failed",
+          ...(htmlCost ? { cost: htmlCost } : {}),
+          error: message,
+        });
         app.log.error(error, `Project revision failed: ${projectName}`);
         return;
       }
@@ -1101,17 +1146,20 @@ function isProjectName(value: unknown): value is string {
  * @example
  * requiresRevisionHtml("modal"); // true
  */
-export function requiresRevisionHtml(presentation: Interaction["presentation"] | undefined): boolean {
-  return presentation === "modal" || presentation === "tab" || presentation === "new_page";
+export function requiresRevisionHtml(presentation: Interaction["presentation"] | undefined, modalKind?: ModalKind): boolean {
+  if (presentation === "modal") return !modalKind || modalKind === "custom";
+  return presentation === "tab" || presentation === "new_page";
 }
 
 function parseRevision(value: unknown): Revision | null {
   if (!isRecord(value) || (value.prompt !== null && (typeof value.prompt !== "string" || !value.prompt.trim())) || !Array.isArray(value.comments)) return null;
+  if (value.attachment_url !== undefined && !isAttachmentUrl(value.attachment_url)) return null;
   const thinkingLevel = value.thinking_level ?? "medium";
   if (thinkingLevel !== "low" && thinkingLevel !== "medium" && thinkingLevel !== "high") return null;
   const comments: RevisionComment[] = [];
   for (const comment of value.comments) {
     if (!isRecord(comment) || typeof comment.comment !== "string" || !comment.comment.trim()) return null;
+    if (comment.attachment_url !== undefined && !isAttachmentUrl(comment.attachment_url)) return null;
     if (comment.kind === "element" && (!isRecord(comment.target) || typeof comment.target.selector !== "string" || !comment.target.selector.trim())) return null;
     if ("figma_frame" in comment && "figma_page" in comment) return null;
 
@@ -1137,6 +1185,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
+}
+
+function isAttachmentUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function redactAttachmentUrls(revision: Revision): Revision {
+  return {
+    ...revision,
+    attachment_url: undefined,
+    comments: revision.comments.map(({ attachment_url: _attachmentUrl, ...comment }) => comment),
+  };
+}
+
+async function fileExists(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function queuedResponse(projectName: string, projectId: string, jobId: string) {

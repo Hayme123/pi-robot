@@ -12,12 +12,42 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { FastifyBaseLogger } from "fastify";
 import { createFigmaDesignSpec } from "./figma/cleaner.js";
+import type { AttachmentReference } from "./attachments.js";
 
 const run = promisify(execFile);
 
 let modelRuntime: Promise<ModelRuntime> | undefined;
+export type ModalKind = "confirmation" | "success" | "error" | "loading" | "custom";
+type ImageContent = { type: "image"; data: string; mimeType: string };
 type Usage = { cost: number; contextLength: number | null; contextWindow: number | null; contextPercent: number | null };
 type RevisionResult = Usage & { summary: string };
+
+/**
+ * Classifies a modal screenshot before deciding whether HTML extraction is needed.
+ *
+ * @param {string} imagePath - Modal screenshot path.
+ * @param {FastifyBaseLogger} log - API logger.
+ * @returns {Promise<ModalKind>} The supported semantic modal kind or custom.
+ */
+export async function classifyModal(imagePath: string, log: FastifyBaseLogger): Promise<ModalKind> {
+  const session = await createProjectSession(path.dirname(imagePath), "medium", log, { tools: [] });
+  try {
+    const image: ImageContent = { type: "image", data: (await readFile(imagePath)).toString("base64"), mimeType: "image/png" };
+    await session.prompt(
+      "Classify this modal screenshot. Reply with JSON only, exactly one of: {\"kind\":\"confirmation\"}, {\"kind\":\"success\"}, {\"kind\":\"error\"}, {\"kind\":\"loading\"}, or {\"kind\":\"custom\"}. Use custom for forms and any modal that is not purely confirmation, success, error, or loading.",
+      { images: [image] },
+    );
+    const match = session.getLastAssistantText()?.match(/\{[\\s\\S]*?\}/);
+    if (!match) return "custom";
+    const kind = JSON.parse(match[0]).kind;
+    return ["confirmation", "success", "error", "loading", "custom"].includes(kind) ? kind : "custom";
+  } catch (error) {
+    log.warn({ error, imagePath }, "Modal classification failed; using custom modal flow");
+    return "custom";
+  } finally {
+    session.dispose();
+  }
+}
 
 /**
  * Prompts Pi to create HTML from a project's downloaded Figma files.
@@ -27,17 +57,18 @@ type RevisionResult = Usage & { summary: string };
  * @returns {Promise<Usage>} Pi usage after HTML generation.
  * @throws {Error} If Pi cannot create or complete the agent session.
  */
-export async function generateProjectHtml(projectDir: string, scaffoldDir: string, log: FastifyBaseLogger): Promise<Usage> {
+export async function generateProjectHtml(projectDir: string, scaffoldDir: string, log: FastifyBaseLogger, attachment?: AttachmentReference): Promise<Usage> {
   log.info({ projectDir }, "Starting HTML generation");
   const designSpecPath = path.join(projectDir, "design_spec.json");
-  const figma = JSON.parse(await readFile(path.join(projectDir, "frame_data_clean.json"), "utf8"));
-  await writeFile(designSpecPath, JSON.stringify(createFigmaDesignSpec(figma), null, 2));
+  const cleanFramePath = path.join(projectDir, "frame_data_clean.json");
+  const hasFigmaSpec = await readFile(cleanFramePath, "utf8").then((value) => writeFile(designSpecPath, JSON.stringify(createFigmaDesignSpec(JSON.parse(value)), null, 2))).then(() => true).catch(() => false);
   const session = await createProjectSession(scaffoldDir, "medium", log);
   try {
     await session.prompt([
       "Use the html skill to generate the requested static interface. Create index.html and styles.css beside the requested output HTML. Do not create JavaScript.",
-      `design_spec_path: ${designSpecPath}`,
-      `image_path: ${projectDir}/frame.png`,
+      ...(hasFigmaSpec ? [`design_spec_path: ${designSpecPath}`] : []),
+      ...(attachment ? [`attachment_path: ${attachment.path}`] : []),
+      ...(attachment?.isImage ? [`image_path: ${attachment.path}`] : hasFigmaSpec ? [`image_path: ${projectDir}/frame.png`] : []),
       `svg_path: ${projectDir}/svg`,
       `output_html_path: ${projectDir}/index.html`,
       "Write formatted code directly. After generating index.html and styles.css, do not make further edits or checks; reply done immediately.",
@@ -119,12 +150,13 @@ export async function defineProjectName(prompt: string, projectsRoot: string, ex
  * @param {string} prompt - User's application request.
  * @param {string} angularDir - Existing Angular workspace.
  * @param {FastifyBaseLogger} log - API logger.
+ * @param {AttachmentReference | undefined} attachment - Optional prompt attachment.
  * @returns {Promise<Usage>} Pi session usage.
  *
  * @example
  * await generatePromptProject("Build a task board", "projects/task-board/task-board", app.log);
  */
-export async function generatePromptProject(prompt: string, angularDir: string, log: FastifyBaseLogger): Promise<Usage> {
+export async function generatePromptProject(prompt: string, angularDir: string, log: FastifyBaseLogger, attachment?: AttachmentReference): Promise<Usage> {
   log.info({ angularDir }, "Starting prompt-only Angular generation");
   const session = await createProjectSession(angularDir, "high", log);
   try {
@@ -132,7 +164,8 @@ export async function generatePromptProject(prompt: string, angularDir: string, 
       "Use the angular-developer skill to build the requested application in the existing Angular project.",
       `User prompt: ${prompt}`,
       `Angular project path: ${angularDir}`,
-      "This is prompt-only generation. Ignore scaffold placeholder content and do not look for or wait for input frames, images, HTML, Figma data, SVG references, or other visual inputs. Design and implement the application using only the user prompt. Dependencies are already installed; do not install packages. Run npm run build once after editing. After the first successful build, reply done immediately and make no further edits or tool calls.",
+      `Prompt attachment (read-only): ${attachment ? JSON.stringify(attachment) : "none"}`,
+      "This is prompt-only generation. Ignore scaffold placeholder content when no attachment is provided. If an attachment is provided, read it and use it as an additional design/reference input. Design and implement the application using the user prompt and attachment. Dependencies are already installed; do not install packages. Run npm run build once after editing. After the first successful build, reply done immediately and make no further edits or tool calls.",
     ].join("\n"));
     await formatAngularProject(angularDir, log);
     const usage = getUsage(session);
@@ -148,7 +181,8 @@ export async function generatePromptProject(prompt: string, angularDir: string, 
  *
  * @param {string} angularDir - Existing Angular workspace.
  * @param {unknown} revision - Revision prompt and comments.
- * @param {{ commentId: string | number; directory: string; htmlPath?: string }[]} figmaFrames - Downloaded Figma references.
+ * @param {{ commentId: string | number; directory: string; htmlPath?: string; presentation?: string; modalVariant?: ModalKind; attachmentPath?: string }[]} figmaFrames - Downloaded Figma references.
+ * @param {AttachmentReference | undefined} topAttachment - Optional top-level revision attachment.
  * @param {"low" | "medium" | "high"} thinkingLevel - Pi reasoning level.
  * @param {FastifyBaseLogger} log - API logger.
  * @returns {Promise<RevisionResult>} Revision usage and summary.
@@ -159,7 +193,8 @@ export async function generatePromptProject(prompt: string, angularDir: string, 
 export async function applyProjectRevision(
   angularDir: string,
   revision: unknown,
-  figmaFrames: { commentId: string | number; directory: string; htmlPath?: string }[],
+  figmaFrames: { commentId: string | number; directory: string; htmlPath?: string; presentation?: string; modalVariant?: ModalKind; attachmentPath?: string }[],
+  topAttachment: AttachmentReference | undefined,
   thinkingLevel: "low" | "medium" | "high",
   log: FastifyBaseLogger,
 ): Promise<RevisionResult> {
@@ -171,8 +206,9 @@ export async function applyProjectRevision(
       "Apply this revision to the existing Angular application.",
       `Angular project (the only folder you may modify): ${angularDir}`,
       `Revision: ${JSON.stringify(revision)}`,
-      `Attached Figma references (read-only): ${JSON.stringify(figmaFrames)}`,
-      "Apply the top-level prompt even when comments is empty. Treat each figma_frame as a visual reference for that comment, not as an automatic request for a new page. For modal, tab, and new_page references, read the backend-generated htmlPath and adjacent styles.css first and use them as the primary implementation source; use the frame image only as a visual cross-check. Follow the comment and interaction.presentation: auto means infer the appropriate UI from the instruction and existing application; modal, tab, new_page, popover, and inline are explicit. Connect the target identified by target.selector/component/tag/text using interaction.trigger when provided. Create a route only for new_page or when the comment explicitly requests navigation. Apply comments without figma_frame normally. Do not modify files outside the Angular project. Dependencies are installed; do not install packages. Run npm run build once after editing. When it succeeds, your final response must be a concise, specific summary of the changes you made; never respond with only done or completed.",
+      `Top-level revision attachment (read-only): ${topAttachment ? JSON.stringify(topAttachment) : "none"}`,
+      `Attached Figma references and comment attachments (read-only): ${JSON.stringify(figmaFrames)}`,
+      "Apply the top-level prompt even when comments is empty. Treat each figma_frame as a visual reference for that comment, not as an automatic request for a new page. For modal attachments with modalVariant confirmation, success, error, or loading, skip HTML generation and use the image directly; implement ntv-modal with the matching documented variant and do not create custom modal markup or styling. For modal attachments with modalVariant custom, read htmlPath and adjacent styles.css first, use ntv-modal as the outer component, and place the generated content inside it. For tab and new_page references, read the backend-generated htmlPath and adjacent styles.css first and use them as the primary implementation source; use the frame image only as a visual cross-check. Follow the comment and interaction.presentation: auto means infer the appropriate UI from the instruction and existing application; modal, tab, new_page, popover, and inline are explicit. Connect the target identified by target.selector/component/tag/text using interaction.trigger when provided. Create a route only for new_page or when the comment explicitly requests navigation. Apply comments without figma_frame normally. Do not modify files outside the Angular project. Dependencies are installed; do not install packages. Run npm run build once after editing. When it succeeds, your final response must be a concise, specific summary of the changes you made; never respond with only done or completed.",
     ].join("\n"));
     const usage = getUsage(session);
     return {
@@ -197,7 +233,7 @@ async function createProjectSession(
   cwd: string,
   thinkingLevel: "low" | "medium" | "high",
   log: FastifyBaseLogger,
-  { modelId = "gpt-5.6-luna" }: { modelId?: string } = {},
+  { modelId = "gpt-5.6-luna", tools }: { modelId?: string; tools?: string[] } = {},
 ): Promise<AgentSession> {
   log.debug({ cwd, thinkingLevel }, "Creating Pi session");
   const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir() });
@@ -214,7 +250,7 @@ async function createProjectSession(
     thinkingLevel,
     resourceLoader: loader,
     sessionManager,
-    tools: ["read", "write", "edit", "bash", "grep", "find", "ls"],
+    tools: tools ?? ["read", "write", "edit", "bash", "grep", "find", "ls"],
   });
 
   const { session } = await openSession(SessionManager.create(cwd));
