@@ -88,12 +88,15 @@ Read these additional references only when needed:
 | Uploader | `ntv-uploader` | [uploader.md](./references/component-pantry/references/uploader.md) |
 | Video Preview | `ntv-video-preview` | [video-preview.md](./references/component-pantry/references/video-preview.md) |
 - When a Pantry component covers an element, use that documented `ntv-*` component; never implement or style a custom equivalent merely because it is easier.
-- Do not use native `input`, `select`, `textarea`, checkbox, date/time picker, tabs, table, card, modal/drawer, toast, progress bar, carousel, accordion, autocomplete, search, uploader, gallery, graph/chart, or toggle when Pantry has a match.
+- Do not customize, restyle, wrap to simulate, or override an existing Pantry component's internals. Do not add host styles, CSS variable overrides, `::ng-deep`, wrapper selectors, inline styles, or custom classes to change its color, size, radius, shadow, spacing, states, or behavior.
+- Use only the selected component's documented inputs, config fields, variants, sizes, and built-in states. The component reference is the authority for what can be represented.
+- If the exact design is not supported, use the closest documented Pantry component, variant, color, size, and state. Preserve the package default rather than recreating the design with CSS. Do not create a custom component or a styled native replacement to close a visual gap.
+- Do not use native `input`, `select`, `textarea`, checkbox, date/time picker, tabs, table, card, modal/drawer, toast, progress bar, carousel, accordion, autocomplete, search, uploader, gallery, graph/chart, toggle, or button when Pantry has a match.
 - Do not add another UI library.
-- Native HTML is allowed for semantic text, images, links, SVGs, structural layout, and buttons with no suitable Pantry equivalent.
-- Use `ntv-button` when it can reproduce the required button; otherwise use a styled native `button`. Do not force every button into `ntv-button`.
+- Native HTML is allowed only for semantic text, images, links, SVGs, and structural layout when no Pantry component covers the element.
+- Use `ntv-button` for every button Pantry can represent; select the closest documented button variant rather than styling a native button.
 - Read the reference for every selected Pantry component before using it.
-- During the final audit, replace every custom/native template element or import that overlaps the component list below.
+- During the final audit, replace every custom/native template element, wrapper, style override, or import that overlaps the component list below.
 
 ---
 
@@ -120,7 +123,7 @@ Read these additional references only when needed:
 - Use short, feature-aligned BEM naming.
 - SCSS must be written in nested BEM style (block { &__el {} &--mod {} }), not flat BEM selector lists.
 - For Tailwind utilities in SCSS, keep `@apply` on one line per selector whenever possible (single-line `@apply` standard).
-- Never use `::ng-deep`. Use Component Pantry APIs and supported variants; do not override or alter Pantry internals.
+- Never use `::ng-deep`. Do not override or alter Pantry internals. Use only Component Pantry APIs and supported variants; when those do not exactly match the reference, use the closest supported result.
 - `data-testid` is required on all user-interactive elements/components.
 - Include interactive controls like buttons, dropdowns, breadcrumbs links, tables, and interactive table controls/columns.
 - `data-testid` names: lowercase hyphenated, max 5 words.
@@ -149,9 +152,8 @@ Read these additional references only when needed:
 - If the provided view is mobile, treat it as a **PWA screen** and build with mobile app behavior/layout expectations.
 - Enforce **mobile-first development** for mobile screens (base layout/styles for mobile first, then scale up only when needed).
 - Do not fixate on one exact device size; keep behavior responsive across common mobile widths unless instructed otherwise.
-- Gradient buttons and other gradient treatments are allowed when the design calls for them. Define or reuse each semantic gradient under `theme.extend.backgroundImage` in the existing `tailwind.config.js`, then consume its generated `bg-<token>` utility through SCSS `@apply`; do not hardcode gradients in templates, component SCSS, or TypeScript.
 - Use only variants documented by the selected Pantry component; a Tailwind color or gradient token is not a component `variant` value. For the Pantry button's built-in brand gradient, use `variant="primary"`.
-- Do not combine Pantry Button `variant="gradient"` with `color="custom"`: the current Pantry CSS applies `.btn--custom-color` after `.btn--gradient`, clears `background-image`, and leaves the button transparent. If Pantry cannot represent a required custom gradient through a documented API, use a semantic Tailwind gradient on a native button as allowed by the Component Pantry contract; never override Pantry internals.
+- Do not combine Pantry Button `variant="gradient"` with `color="custom"`: the current Pantry CSS applies `.btn--custom-color` after `.btn--gradient`, clears `background-image`, and leaves the button transparent. If a required custom gradient is unsupported, use the closest documented Pantry button treatment; never replace it with a styled native button or override Pantry internals.
 
 ---
 

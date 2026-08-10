@@ -22,6 +22,20 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A date picker component with popover calendar, year picker, and multiple variants.
 
+## Color variants
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| `color` | Trigger label/icon |
+| --- | --- |
+| `black` | `#000000` |
+| `success` | `#d10334` (`accent-500`) |
+| `danger` | `#ef060f` (`red-500`) |
+
+Calendar selections use `#d10334` with `#ffffff` text; range interiors use `#fff3ea` with `#6b7280` text. Today uses a `#d10334` border/text. A valid `customColor` overrides today, selected-date, and range-highlight colors.
+
+The behavior variants (`events`, `date-range-single`, `date-range-double`, and `birthday`) do not define separate palettes.
+
 ## Features
 - Single date selection (events variant)
 - Date range selection in a single trigger (date-range-single variant)

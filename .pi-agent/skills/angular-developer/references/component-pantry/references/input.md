@@ -22,6 +22,22 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A comprehensive and flexible input component with extensive customization and form integration capabilities.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Resting border/accent | Focus | Text |
+| --- | --- | --- | --- |
+| `default` | `#c0c4cc` | `#d10334` | `#091635` |
+| `primary` | `#d10334` | `#a80229` | variant color |
+| `success` | `#10b981` | `#10b981` | variant color |
+| `danger` | `#dc2626` | `#dc2626` | variant color |
+| Error state | `#e83e3e` | `#e83e3e` (`#ef4444` only if the CSS variable is absent) | `#000000` |
+
+The default non-error hover border and icons use `#d10334`, regardless of variant. `borderColor`, `hoverBorderColor`, `focusBorderColor`, `textColor`, and `placeholderColor` override the corresponding defaults. A hex `variant` sets the variant, focus, icon-hover, and label colors to that value.
+
+Dark-mode variant/focus pairs are `primary` `#60a5fa`/`#93c5fd`, `success` `#4ade80`/`#86efac`, and `danger` `#fe4c4d`/`#fe7e7f`.
+
 ## Features
 - Multiple input types - Text, password, email, number with automatic validation
 - Flexible sizing - Extra-small (xs), small (sm), medium (md), large (lg), extra-large (xl)

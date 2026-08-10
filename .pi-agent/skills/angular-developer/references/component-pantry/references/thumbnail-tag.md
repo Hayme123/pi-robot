@@ -22,6 +22,27 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A small color-coded label/badge for tagging media type or category (e.g. Documentary, Video, Feed). Used standalone or layered on top of `ntv-thumbnail-preview` / `ntv-thumbnail-item`.
 
+## Variant colors
+
+Defaults from the exported `THUMBNAIL_TAG_VARIANTS` map in `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Background | Text |
+| --- | --- | --- |
+| `documentary` / `image` | `#eef4fe` | `#0854e3` |
+| `entertainment` | `#f4f3fa` | `#6152b8` |
+| `education` | `#eef7df` | `#4a6b17` |
+| `nature` | `#fff1e9` | `#ac3c00` |
+| `technology` | `#e9f6f5` | `#196d65` |
+| `lifestyle` | `#f9f1f7` | `#a53383` |
+| `fashion` | `#fdf1f1` | `#b82a2a` |
+| `animal` | `#fff2db` | `#875700` |
+| `video` | `#fdf1f1` | `#e73535` |
+| `feed` | `#e9f6f5` | `#26a69a` |
+| `channel` | `#fff2db` | `#ffa500` |
+| `filler` | `#feebc8` | `#c05621` |
+| `default` | `#f3f3f5` | `#586176` |
+| `custom` | `backgroundColor` | `textColor` |
+
 ## Features
 - 14 preset color variants (documentary, entertainment, education, nature, technology, lifestyle, fashion, animal, image, video, feed, channel, filler, default) plus `custom` for arbitrary colors
 - 5 size presets: `xs`, `sm`, `md`, `lg`, `full`

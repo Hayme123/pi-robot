@@ -22,6 +22,20 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A fully interactive calendar component with month, week, and day views.
 
+## Default colors
+
+The default `calendarConfig.colorConfig` in `@ntv360/component-pantry@0.7.1` is:
+
+| Part | Value |
+| --- | --- |
+| Accent/text | `#d10334` |
+| Background | `#ffffff` |
+| `hover-sm` | `#d10334` |
+| `hover-md` | `#fdf2f4` |
+| `hover-lg`, `hover-xl`, `hover-2xl` | `#d10334` |
+
+`calendarConfig.colorConfig` replaces these values. Calendar legends and event/leave types can supply their own colors.
+
 ## Features
 - Month / Week / Day view switching
 - Navigate between months and years with year picker

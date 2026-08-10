@@ -22,6 +22,24 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A flexible content view component for displaying various types of content items.
 
+## Variant and state colors
+
+`default`, `card`, `list`, and `grid` share this palette in `@ntv360/component-pantry@0.7.1`; they differ structurally. `media` adds the overlay colors shown below.
+
+| State/part | Light | Dark |
+| --- | --- | --- |
+| Item background | `#ffffff` | `#1f2937` |
+| Item border | `#e5e7eb` | `#374151` |
+| Text | `#374151` | `#f9fafb` |
+| Muted text | `#6b7280` | `#d1d5db` |
+| Hover background | `#f3f4f6` | `#374151` |
+| Selected background | `#eff6ff` | `#1e3a8a` |
+| Selected border | `#3b82f6` | `#60a5fa` |
+| Accent | `#3b82f6` | `#3b82f6` |
+| `media` overlay | `linear-gradient(to top, rgb(0 0 0 / 80%), transparent)` with `#ffffff` text | same |
+
+Built-in action colors are primary `#3b82f6` (hover `#2563eb`), success `#10b981` (hover `#059669`), and danger `#ef4444` (hover `#dc2626`), all with white text.
+
 ## Features
 - Multiple visual variants - default, card, list, grid, media
 - Flexible sizing options - sm, md, lg, xl

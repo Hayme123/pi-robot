@@ -22,6 +22,18 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A flexible checkbox component with multiple sizes, colors, and states.
 
+## Color variants
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| `color` | Checked/indeterminate background | Border | Checkmark |
+| --- | --- | --- | --- |
+| `accent` | `#d10334` | `#d10334` | `#ffffff` |
+| `information` | `#095af3` | `#095af3` | `#ffffff` |
+| `custom` | `customColor` | `customColor` | `#ffffff` |
+
+`indeterminateColor` and `indeterminateCustomColor` override the same fields only while indeterminate.
+
 ## Features
 - Multiple sizes - sm, md, lg
 - Color options - accent (green), information (blue), custom (any hex)

@@ -30,6 +30,69 @@ A versatile button component with multiple variants, sizes, and states.
 <ntv-button variant="primary">Continue</ntv-button>
 ```
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`. The primary resting color is the supported brand gradient described above.
+
+| Variant | Resting background | Text/border | Hover | Active/focus |
+| --- | --- | --- | --- | --- |
+| `primary` | `linear-gradient(90deg, #c41e5c, #e8342a 60%, #ff6b00)`; fallback `#091635` | `#ffffff` | `linear-gradient(90deg, #a00558, #ef060f, #f18029)` | active removes the gradient, revealing `#091635`; focus ring `#777f90` |
+| `secondary` | `#ffffff` | `#d10334` text and border | `#ffc28d` with `#ffffff` text | `#03235d` with `#ffffff` text; focus ring `#d10334` |
+| `success` | `#3adb30` | `#ffffff` | `#6ee466` | focus ring `#279220` |
+| `warning` | `#ffa500` | `#ffffff` | `#ffc150` | focus ring `#ffa500` |
+| `danger` | transparent | `#d10334` text and border | `#fff3ea` with `#d10334` text | `#e73535` with `#ffffff` text |
+| `accent` | `#d10334` | `#ffffff` | `#ff8500` | focus ring `#d10334` |
+| `description` | `#6b7280` | `#ffffff` | `#4b5563` | focus ring `#9ca3af` |
+| `info` | `#095af3` | `#ffffff` | `#0854e3` | focus ring `#095af3` |
+| `ghost` | `#f3f3f5` | `#c9ccd2` | unchanged | no variant-specific focus color |
+| `outline` | transparent | inherited text; `#e5e7eb` default border | `hoverColor` supplies background, border, and text | no built-in hover fallback |
+| `fill-to-outline` | `var(--button-color)` | `#ffffff` | white fill with `var(--button-color)` border/text gradient | requires a custom color/gradient |
+| `outline-to-fill` | white fill with `var(--button-color)` border/text gradient | gradient text | `var(--button-color)` fill with `#ffffff` text | requires a custom color/gradient |
+| `gradient` | `var(--button-color)` | `#ffffff` | unchanged | requires a custom gradient |
+| `split` | transparent | `#111827`; separator fallback `#d1d5db` | `var(--hover-color, var(--button-color, #ffe2cc))` | no variant-specific active color |
+
+Focus-ring values apply only when `noFocusRing=false`; its default is `true`. `primary`, `secondary`, `success`, `warning`, `danger`, `accent`, `description`, and `info` disabled states use the component's general 50% opacity. `primary` instead resolves to `#e5e7eb` with `#5b6478` text at full opacity; `secondary` resolves to `#e6e7ea` with `#c9ccd2` text at full opacity.
+
+### Named `color` overrides
+
+A named `color` adds another button class and overrides the variant fill.
+
+| `color` | Resting | Hover | Focus ring | Text |
+| --- | --- | --- | --- | --- |
+| `blue` | `#2563eb` | `#1d4ed8` | `#3b82f6` | `#ffffff` |
+| `green` | `#16a34a` | `#15803d` | `#22c55e` | `#ffffff` |
+| `red` | `#cf040b` | `#a30307` | `#ef060f` | `#ffffff` |
+| `yellow` | `#ca8a04` | `#a16207` | `#eab308` | `#ffffff` |
+| `purple` | `#6152b8` | `#412faa` | `#8073c6` | `#ffffff` |
+| `gray` | `#4b5563` | `#374151` | `#6b7280` | `#ffffff` |
+| `indigo` | `#4f46e5` | `#4338ca` | `#6366f1` | `#ffffff` |
+| `pink` | `#db2777` | `#be185d` | `#ec4899` | `#ffffff` |
+
+### FAB color differences
+
+`fab` and `fabRoundedFull` use solid fills rather than the standard primary gradient. Their main resting/hover/active colors are:
+
+| Variant | Resting | Hover | Active |
+| --- | --- | --- | --- |
+| `primary` | `#091635` | `#3b455e` | `#3b455e` |
+| `secondary` | `#4b5563` | `#374151` | `#1f2937` |
+| `success` | `#3adb30` | `#6ee466` | `#0c2d0a` |
+| `warning` | `#ffa500` | `#ffc150` | `#362300` |
+| `danger` | `#ef4444` | `#dc2626` | `#b91c1c` |
+| `accent` | `#d10334` | `#ff8500` | `#d10334` |
+| `info` | `#095af3` | `#0854e3` | `#03235d` |
+| `description` | `#6b7280` | `#4b5563` | `#4b5563` |
+
+`fabInteractive` uses the same resting and hover fills. Although its base active selector declares `#1f2937`, the later variant selectors win in the resolved cascade: pointer-active keeps the variant hover fill, while `[active]` keeps the resting fill. FAB disabled fill/text are `#e5e7eb`/`#9ca3af`.
+
+### Custom color behavior
+
+- `primary` sets `--btn-bg`, `--btn-border`, and contrast-aware `--btn-text`; with `gradient=true`, a solid hex becomes a three-stop gradient using the color darkened/lightened by 18%.
+- `outline` sets `--btn-outline-color`; `backgroundColor` sets `--btn-outline-bg`.
+- `outline-to-fill`, `fill-to-outline`, and `gradient` set `--button-color`.
+- `ghost` sets `--btn-bg` and contrast-aware `--btn-text`.
+- `hoverColor` sets `--hover-color`.
+
 ## Playground Controls
 | Control | Type | Default | Label | Description | Options | Content |
 | --- | --- | --- | --- | --- | --- | --- |

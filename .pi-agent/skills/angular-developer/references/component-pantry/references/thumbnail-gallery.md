@@ -22,6 +22,20 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A media gallery component that renders a grid or list of thumbnail cards from an `items` array.
 
+## Variant and state colors
+
+Card variant colors are inherited from [Thumbnail Item](./thumbnail-item.md#variant-and-state-colors). Gallery list mode adds these defaults in `@ntv360/component-pantry@0.7.1`:
+
+| State | Background | Border |
+| --- | --- | --- |
+| Resting | `#ffffff` | none |
+| Hover | `#f9fafb` | none |
+| Focus | `#fff3ea` | none |
+| Selected | `#fff3ea` | `#ffc08a` |
+| Checked checkbox | `#d10334` | `#d10334`; checkmark `#ffffff` |
+
+`galleryTagVariant` uses [Thumbnail Tag colors](./thumbnail-tag.md#variant-colors). `infoTagTextColor` and `infoTagBackgroundColor` override item tag colors.
+
 ## Features
 - Grid and list layouts with configurable columns and gap
 - Size variants: `sm`, `md`, `lg`, `xl`, `channel-sm/md/lg/xl`

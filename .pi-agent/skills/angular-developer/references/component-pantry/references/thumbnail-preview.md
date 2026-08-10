@@ -22,6 +22,19 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A single media thumbnail card with hover, title overlay, action buttons, lightbox, and selection state.
 
+## Variant and state colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant/state | Background | Border |
+| --- | --- | --- |
+| `default`, `shadow`, `elevated` | `#ffffff` | none |
+| `bordered` | `#ffffff` | `#e5e7eb` |
+| Selected | unchanged | `#d10334` |
+| Selected click feedback | unchanged | `#095af3`, fading over 1 second |
+
+The visual variants otherwise change shadow/elevation rather than color.
+
 ## Features
 - 8 size presets: `xs` (197×161), `sm` (240×160), `md` (353×238), `lg` (480×320), `xl` (640×426), `expanded` (auto), `carousel-md`, `carousel-lg`
 - 4 visual variants: `default`, `bordered`, `shadow`, `elevated`
@@ -29,7 +42,7 @@ A single media thumbnail card with hover, title overlay, action buttons, lightbo
 - Hover scale / shadow effects (configurable)
 - Title, tag, details, and type-category overlay shown on hover
 - Action buttons: edit, delete (shown on hover)
-- Selected state (green border highlight)
+- Selected state (`#D10334` accent border highlight)
 - Loading state with Lottie animation
 - Lightbox on preview with auto-play for video assets
 - Supports image and video thumbnails; falls back to placeholder on error

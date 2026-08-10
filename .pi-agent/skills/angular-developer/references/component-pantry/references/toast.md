@@ -22,6 +22,19 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A self-dismissing notification banner with progress bar, icon, and configurable positioning.
 
+## Variant colors
+
+Defaults from the exported `TOAST_VARIANT_COLORS` map in `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Background | Text | Icon | Progress | Border |
+| --- | --- | --- | --- | --- | --- |
+| `success` | `#dcfce7` | `#166534` | `#166534` | `#22c55e` | `#bbf7d0` |
+| `error` | `#fee2e2` | `#991b1b` | `#dc2626` | `#ef4444` | `#fecaca` |
+| `warning` | `#fef3c7` | `#92400e` | `#d97706` | `#f59e0b` | `#fde68a` |
+| `info` | `#dbeafe` | `#1e40af` | `#2563eb` | `#3b82f6` | `#bfdbfe` |
+
+The four `custom*Color` inputs override background, text, icon, and progress independently. The border remains variant-derived.
+
 ## Features
 - 4 semantic variants: `success`, `error`, `warning`, `info`
 - 6 screen positions: `top-left`, `top-center`, `top-right`, `bottom-left`, `bottom-center`, `bottom-right`

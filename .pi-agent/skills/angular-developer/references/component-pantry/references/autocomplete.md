@@ -22,6 +22,37 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A highly configurable autocomplete component that supports single and multiple selection, custom filtering, and more.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| State/variant | Resting border | Hover/focus border |
+| --- | --- | --- |
+| `default` | `#e5e7eb` | `var(--main-hover-color, #d10334)` |
+| `primary` | `#e5e7eb` | `var(--main-hover-color, #d10334)` |
+| `success` | `#86efac` | `var(--main-hover-color, #d10334)` |
+| `error` | `#cf040b` | `var(--main-hover-color, #d10334)` |
+| `soft` / `ghost` | no dedicated compiled color rule | `var(--main-hover-color, #d10334)` |
+
+The package declares semantic focus-color variables for `success` and `error`, but its compiled focus selector does not consume them; the resolved hover/focus border remains `mainHoverColor`. Highlighted and selected options default to `rgb(253 121 2 / 12%)` with `#d10334` text. `mainHoverColor` and `hoverBgColor` override those values.
+
+Version `0.7.1` contains methods for `optionColors`, `checkboxColors`, and `customChipColors`, but its template does not bind their returned styles, so those object inputs have no resolved color effect.
+
+### Chip colors
+
+Visible selected chips always resolve to `var(--main-hover-color, #d10334)` with `#ffffff` text. The `chipColor` palettes below apply to the overflow (`+N more`) chip and the selected chip's remove-button hover.
+
+| `chipColor` | Overflow background | Text | Border/hover |
+| --- | --- | --- | --- |
+| `primary` | `#dbeafe` | `#1e40af` | `#bfdbfe` |
+| `success` | `#dcfce7` | `#166534` | `#bbf7d0` |
+| `warning` | `#fef3c7` | `#92400e` | `#fde68a` |
+| `error` | `#fee2e2` | `#dc2626` | `#fecaca` |
+| `purple` | `#f3e8ff` | `#7c3aed` | `#ddd6fe` |
+| `pink` | `#fce7f3` | `#be185d` | `#f9a8d4` |
+| `indigo` | `#e0e7ff` | `#4338ca` | `#c7d2fe` |
+| `gray` | `#f3f4f6` | `#374151` | `#d1d5db`; hover `#e5e7eb` |
+
 ## Playground Controls
 | Control | Type | Default | Label | Description | Options | Content |
 | --- | --- | --- | --- | --- | --- | --- |

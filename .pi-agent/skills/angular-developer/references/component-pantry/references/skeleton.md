@@ -22,6 +22,18 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A shimmer skeleton loader component with automatic content detection.
 
+## Color defaults
+
+All shape variants share the same colors in `@ntv360/component-pantry@0.7.1`:
+
+| Part | CSS property | Default |
+| --- | --- | --- |
+| Base | `--skeleton-base-color` | `#e2e8f0` |
+| Shimmer highlight | `--skeleton-highlight-color` | `#f8fafc` |
+| Optional border | `border` | `2px solid #e5e7eb` |
+
+`baseColor` and `highlightColor` override the corresponding CSS custom properties. Shape variants only change dimensions and radius.
+
 ## Features
 - Multiple preset variants - text, title, avatar, thumbnail, image, button, card, list-item, paragraph, custom
 - Automatic content dimension detection when wrapping content

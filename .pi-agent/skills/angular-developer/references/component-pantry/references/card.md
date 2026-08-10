@@ -22,6 +22,19 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A flexible and customizable card component with comprehensive styling options.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Light background | Light border | Dark background | Dark border/text |
+| --- | --- | --- | --- | --- |
+| `default` | `#ffffff` | `1px solid #e5e7eb` | `#1f2937` | `#374151` / `#f9fafb` |
+| `elevated` | `#ffffff` | none | `#1f2937` | none / `#f9fafb` |
+| `outlined` | `#ffffff` | `2px solid #e5e7eb` | `#1f2937` | `#374151` / `#f9fafb` |
+| `filled` | `#f9fafb` | `1px solid #e5e7eb` | `#374151` | `#374151` / `#f9fafb` |
+
+`backgroundColor`, `borderColor`, and `gradient` override these defaults. `noBorder` removes the variant border.
+
 ## Features
 - Visual variants - default, elevated, outlined, filled
 - Border radius options - none, sm, md, lg, xl, full

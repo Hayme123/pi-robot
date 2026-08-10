@@ -22,6 +22,19 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A purpose-built multiline textarea component that mirrors the Input component's API while being optimized for longer text input.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Light border | Light background/text | Dark border | Dark background/text |
+| --- | --- | --- | --- | --- |
+| `default` | `#d1d5db` | `#ffffff` / `#111827` | `#4b5563` | `#1f2937` / `#f3f4f6` |
+| `primary` | `#095af3` | `#ffffff` / `#111827` | `#60a5fa` | `#1f2937` / `#f3f4f6` |
+| `success` | `#3adb30` | `#ffffff` / `#111827` | `#4ade80` | `#1f2937` / `#f3f4f6` |
+| `error` | `#e83e3e` | `#ffffff` / `#111827` | `#fe4c4d` | `#1f2937` / `#f3f4f6` |
+
+All variants use a `#095af3` focus ring at 50% opacity. A hex `variant` sets custom CSS properties, but the compiled `0.7.1` selectors do not consume them, so it has no resolved color effect.
+
 ## Features
 - Multiline text input - Purpose-built for descriptions, comments, and long-form content
 - Flexible sizing - Extra-small (xs), small (sm), medium (md), large (lg), extra-large (xl)

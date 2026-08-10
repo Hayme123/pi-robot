@@ -22,6 +22,21 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A flexible dropdown select component with multiple variants, sizes, and customization options.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Resolved trigger background | Resolved resting border |
+| --- | --- | --- |
+| `default` | `#ffffff` | `#e5e7eb` |
+| `soft` | `#ffffff` | `#e5e7eb` |
+| `ghost` | `#ffffff` | `#e5e7eb` |
+| Custom color string | `#ffffff` | `#e5e7eb`; custom color on hover/open/selection |
+
+Version `0.7.1` contains `soft` and `ghost` color declarations, but their selector expects `.dropdown__trigger` while the rendered trigger receives `.dropdown__trigger-button`; they therefore do not affect the resolved trigger. Hover, open, and selected borders use `var(--dropdown-accent, #d10334)`.
+
+Selected options use `rgb(253 121 2 / 12%)`, increasing to 18% on hover, with `var(--dropdown-accent, #d10334)` text/checkmark. `hoverColor` and `hoverBgColor` override the interactive colors.
+
 ## Playground Controls
 | Control | Type | Default | Label | Description | Options | Content |
 | --- | --- | --- | --- | --- | --- | --- |

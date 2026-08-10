@@ -22,6 +22,14 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 An interactive donut chart powered by ApexCharts for data visualization.
 
+## Default color palette
+
+Segment fallback order from `@ntv360/component-pantry@0.7.1`:
+
+`#a9da5c`, `#095af3`, `#ffae00`, `#f6284e`, `#7017e6`, `#c99eef`, `#d10bdb`, `#fbff00`, `#00ced1`, `#ff6347`, `#32cd32`, `#ffd700`, `#9370db`, `#20b2aa`, `#ff69b4`, `#00fa9a`
+
+`config.colors` takes precedence and cycles when shorter than the data. Item-level colors are used only when every item defines `color`; otherwise the fallback palette is used.
+
 ## Features
 - Multiple size presets - small, medium, large, fullscreen, custom, auto
 - Custom color overrides per segment or entire palette

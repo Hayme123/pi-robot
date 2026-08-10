@@ -22,6 +22,20 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A highly configurable modal component with content projection support.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Surface | Primary status/title | Supporting text |
+| --- | --- | --- | --- |
+| `default` | `#ffffff` | inherited | inherited |
+| `confirmation` | `#ffffff` | title `#1e3a8a` | `#4b5563` |
+| `success` | `#ffffff` | icon/title/body `#d10334` | inherited |
+| `error` | `#ffffff` | icon `#f43f5e`; title `#e11d48` | body `#cf040b` |
+| `loading` | `#ffffff` | title `#111827` | description `#4b5563` |
+
+The default `blur` backdrop with `grayBackground=true` resolves to `rgb(0 0 0 / 90%)` with a 4px blur. Confirmation actions default to `confirmButtonColor="#D10334"` and `cancelButtonColor="#f3f4f6"`; those inputs override the action colors.
+
 ## Features
 - **Content Projection** - Maximum flexibility for any content (forms, confirmations, custom content)
 - **Multiple Variants** - Default, confirmation, success, error, loading

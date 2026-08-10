@@ -22,6 +22,14 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A versatile line and bar chart component powered by ApexCharts with support for time-based filtering.
 
+## Default color palette
+
+All graph variants use the same fallback series palette in `@ntv360/component-pantry@0.7.1`:
+
+`#a9da5c`, `#095af3`, `#ffae00`, `#f6284e`, `#ffae00`, `#c99eef`
+
+The duplicate `#ffae00` is present in the exported package constant. `config.colors` replaces this palette; `headerMetrics[].color` controls metric colors independently.
+
 ## Features
 - Four variants: line-with-legend, line-with-filter-legend, bar-with-legend, bar-with-filter-legend
 - Size presets: small (800px), medium (1000px), large (1446px), fullscreen, custom

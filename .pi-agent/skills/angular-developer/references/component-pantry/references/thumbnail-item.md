@@ -22,6 +22,20 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A single media card showing a thumbnail (image, video, document, audio, folder, archive, code, feed, or filler) with selection, hover video playback, action buttons, and a right-click context menu. Used standalone or as the per-item renderer inside `ntv-thumbnail-gallery`.
 
+## Variant and state colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant/state | Background | Border |
+| --- | --- | --- |
+| `default`, `shadow`, `rounded`, `channel` | `#ffffff` | none |
+| `bordered` | `#ffffff` | `2px solid #d1d5db` |
+| Hover when clickable | `#fff3ea` | `2px solid #d10334` |
+| Selected | `#fff3ea` | `2px solid #d10334` |
+| Selected checkbox | `#d10334` | `#d10334`; checkmark `#ffffff` |
+
+Info-tag colors come from [Thumbnail Tag](./thumbnail-tag.md#variant-colors) unless item-level or component-level custom colors override them.
+
 ## Features
 - Grid or list layout; `sm`/`md`/`lg`/`xl` plus `channel-*` size presets
 - 4 visual variants: `default`, `bordered`, `shadow`, `rounded` (plus `channel`)

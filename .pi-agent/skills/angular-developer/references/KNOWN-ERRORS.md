@@ -1080,3 +1080,25 @@ A summary or action belonging only to a table is marked up as a page or section 
 - Give projected card-content wrappers `w-full min-w-0`.
 - Propagate `h-full min-h-0` through every nested flex container between the height-constrained outer card and a percentage-height table.
 - Fix the parent height chain instead of clipping the `ntv-table` or `ntv-card` directly.
+
+---
+
+## ERR-036 — Angular SVG Sprite Binding Quote
+
+**Symptom:** Production compilation reports an unterminated quote in an SVG `<use>` `[attr.xlink:href]` binding.
+
+**Root Cause:** The template expression used a mismatched quote around a literal sprite reference.
+
+**Verified Fix:** Use a complete Angular string expression such as `[attr.xlink:href]=\"'assets/icons/icons-sprite.svg#external-link'\"`.
+
+**Rule:** Keep both the Angular binding quote and the inner literal quote closed when referencing a static sprite symbol.
+
+## ERR-037 - Responsive sidebar drawer
+
+**Symptom:** The sidebar collapsed into a narrow icon rail on small screens, reducing navigation usability and constraining the dashboard layout.
+
+**Root cause:** The sidebar used a fixed-width responsive rail instead of a mobile navigation drawer, while the dashboard content retained the sidebar width.
+
+**Verified fix:** The sidebar is now a full-width mobile drawer with an off-canvas transform, scrim, and Pantry menu button; desktop behavior remains unchanged.
+
+**Rule:** Treat the sidebar as an off-canvas drawer below 768px and keep the dashboard content full width on mobile.

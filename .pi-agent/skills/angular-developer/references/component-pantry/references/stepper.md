@@ -22,6 +22,24 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A flexible stepper component that supports multiple variants and orientations.
 
+## Color variants
+
+Defaults from `@ntv360/component-pantry@0.7.1`. The color inputs affect active/completed indicators, connectors, labels, and descriptions; inactive elements remain neutral.
+
+| Color | Main active/completed color | Tinted panel background |
+| --- | --- | --- |
+| `primary` | `#777f90` | `color-mix(in srgb, #777f90 10%, white)` |
+| `accent` | `#d10334` | `color-mix(in srgb, #d10334 10%, white)` |
+| `success` | `#279220` | `color-mix(in srgb, #279220 10%, white)` |
+| `warning` | `#ffa500` | `color-mix(in srgb, #ffa500 10%, white)` |
+| `danger` | `#e83e3e` | `color-mix(in srgb, #e83e3e 10%, white)` |
+| `info` | `#3779f5` | `color-mix(in srgb, #3779f5 10%, white)` |
+| `white` | `#ffffff` | `color-mix(in srgb, #ffffff 10%, white)` |
+| `neutral` | `#999eaa` | `color-mix(in srgb, #999eaa 10%, white)` |
+| `neutral-dark` | `#091635` | `color-mix(in srgb, #091635 10%, white)` |
+
+Exceptions in the compiled styles: the default/progress `primary` step text uses `#3779f5`; `info` step text can use `#26a69a`; completed default `accent` numbers use the brand gradient `linear-gradient(90deg, #c41e5c, #e8342a 60%, #ff6b00)` with a `#d10334` border. Error state uses `#e83e3e`; warning container borders use `#f97316`.
+
 ## Features
 - Multiple variants - default, progress, detailed, panel, vertical, vertical-reverse, breadcrumb, form, icon, numbered
 - Layout direction - Horizontal or vertical based on variant

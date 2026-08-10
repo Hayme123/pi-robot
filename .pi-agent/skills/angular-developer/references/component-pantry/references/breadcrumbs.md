@@ -22,6 +22,18 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A flexible breadcrumbs component for displaying navigational hierarchy.
 
+## Variant colors
+
+`default`, `compact`, and `minimal` all use a transparent background in `@ntv360/component-pantry@0.7.1`; the variants only change padding and radius.
+
+| Element | Default |
+| --- | --- |
+| Active/current item | `var(--active-color, #d10334)` |
+| Inactive item | `var(--inactive-color, #091635)` |
+| Focus ring | `var(--active-color, #d10334)` |
+
+`customActiveColor` and `customInactiveColor` set the two CSS custom properties.
+
 ## Features
 - Multiple sizes - sm, md, lg
 - Visual variants - default, compact, minimal

@@ -22,6 +22,20 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A searchbar component that combines an input field with a search button and optional autocomplete suggestions.
 
+## Variant colors
+
+The `variant` palette is inherited from [Input](./input.md#variant-colors). Defaults specific to `@ntv360/component-pantry@0.7.1` are:
+
+| Element/state | Background | Text/border |
+| --- | --- | --- |
+| Search button | `#f8f9fa` | text `#6b7280`; border `#e5e7eb` |
+| Search button hover | `#f3f4f6` | border `#d1d5db` |
+| Search button disabled | `#f3f3f5` | text `#9ba0ac`; border `#e5e7eb` |
+| Result panel | `#ffffff` | border `#e5e7eb` |
+| Result hover | `rgb(209 3 52 / 12%)` | name `#d10334` |
+
+`buttonBgColor` sets the component accent (`#d10334` by default), which drives input focus and clear-icon hover. Despite its legacy name, it does not set the neutral search-button background in the compiled `0.7.1` styles.
+
 ## Features
 - Built on top of the Input component - Inherits styling and accessibility
 - Search button with minimum character validation - Configurable threshold
@@ -66,7 +80,7 @@ A searchbar component that combines an input field with a search button and opti
 | `minCharactersPlaceholder` | `string` | no | `''` | User-defined text shown when the minimum character requirement is displayed |
 | `showMinCharacters` | `boolean` | no | `false` | Whether to show min characters in placeholder |
 | `size` | `'xs' \| 'sm' \| 'md' \| 'lg' \| 'xl'` | no | `'md'` | Size of the search input |
-| `buttonBgColor` | `string` | no | `'#D10334'` | Background color of the search button |
+| `buttonBgColor` | `string` | no | `'#D10334'` | Component accent color used for input focus and clear-icon hover; the compiled neutral search-button background is separate |
 | `inputBorderColor` | `string \| null` | no | `null` | Border color of the search input |
 | `inputHoverBorderColor` | `string \| null` | no | `null` | Border color of the search input on hover |
 | `inputFocusBorderColor` | `string \| null` | no | `null` | Border color of the search input on focus |

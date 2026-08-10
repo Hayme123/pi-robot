@@ -22,6 +22,18 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A simple accordion component with ng-content projection for header and body.
 
+## Variant colors
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| Variant | Item background | Border | Header hover | Header focus |
+| --- | --- | --- | --- | --- |
+| `default` | `#ffffff` | `#e5e7eb` | `#f9fafb` | `#dbeafe` |
+| `bordered` | `#ffffff` | `#e5e7eb` | `#f9fafb` | `#eff6ff` |
+| `flush` | transparent | `#e5e7eb` bottom border | `#f9fafb` | `#dbeafe` |
+
+In dark mode, item backgrounds use `#262626`, borders use `#404040`, and hover backgrounds use `rgb(64 64 64 / 50%)` (`flush`: `rgb(38 38 38 / 50%)`).
+
 ## Features
 - Named content projection - Use `slot="header"` and `slot="body"` for flexible content
 - Multiple visual variants - Default, bordered, flush

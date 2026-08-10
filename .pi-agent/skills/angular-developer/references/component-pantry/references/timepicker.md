@@ -22,6 +22,21 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A scrollable time picker with 12h/24h format support and full form integration.
 
+## Color defaults
+
+Defaults from `@ntv360/component-pantry@0.7.1`:
+
+| State/part | Background | Text/border |
+| --- | --- | --- |
+| Resting | transparent | text `#777f90`; optional border `#e5e7eb` |
+| Hover | transparent | text and border `#d10334` |
+| Active | transparent | text `#091635`; border `#9ca3af` |
+| Selected option | transparent | `#091635` (`#d1d5db` in dark mode) |
+| Disabled | transparent | `#9ca3af` |
+| Error | transparent | `#ef060f`; hover `#cf040b` |
+
+Version `0.7.1` declares background, border, selected-text, and custom-variant CSS properties, but the rendered selectors do not consume most of them. A hex `variant` sets custom properties that do not affect the resolved compiled appearance. There are also no separate compiled palettes for named `primary` or `secondary` variants.
+
 ## Features
 - 12-hour (AM/PM) and 24-hour format modes
 - Optional seconds column

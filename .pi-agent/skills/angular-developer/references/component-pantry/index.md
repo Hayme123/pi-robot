@@ -2,6 +2,15 @@
 
 Use `@ntv360/component-pantry` as the company-standard source for visual components. These references track package version `0.7.1`, whose peer range supports Angular 21 and 22; verify the installed package version before applying this API to another project.
 
+## Color reference convention
+
+Color tables in component references describe the package defaults from `@ntv360/component-pantry@0.7.1`. Values come from the package's compiled component styles and exported variant maps. Runtime custom-color inputs and consumer CSS overrides take precedence.
+
+- `var(--token, fallback)` means the package exposes a CSS custom property; the fallback is the resolved default.
+- A plain hex, RGB, or gradient value is hard-coded by the package and is not a theme token.
+- Match interactive designs against hover, active, focus, selected, and disabled values where documented—not only the resting color.
+- Structural variants that only change layout, size, radius, or elevation do not receive a color table.
+
 ## Component selection and usage
 
 1. Search the index below before creating a visual component or adding another UI dependency.

@@ -22,6 +22,23 @@ Read this file after selecting it from the component index. It is optimized for 
 ## Description
 A switch-style toggle control with customisable size, colour theme, and optional label.
 
+## Color variants
+
+Checked-state defaults from the exported `TOGGLE_COLOR_HEX` map in `@ntv360/component-pantry@0.7.1`:
+
+| `color` | Checked track |
+| --- | --- |
+| `accent_color` | `#d10334` |
+| `blue` | `#007bff` |
+| `green` | `#28a745` |
+| `red` | `#dc3545` |
+| `yellow` | `#ffc107` |
+| `purple` | `#6f42c1` |
+| `gray` | `#6c757d` |
+| `custom` | `customColor` |
+
+The unchecked track is `#e6e7ea`; the knob is `#fafafa`. Disabled controls use 60% opacity. The runtime input default is `accent_color`; the exported `DEFAULT_TOGGLE_CONFIG` uses `blue` when explicitly supplied as `config`.
+
 ## Features
 - 3 sizes: `sm`, `md`, `lg`
 - 7 preset colour tokens: `accent_color`, `blue`, `green`, `red`, `yellow`, `purple`, `gray`
@@ -48,7 +65,7 @@ A switch-style toggle control with customisable size, colour theme, and optional
 | `checked` | `boolean` | no | `false` | Current on/off state of the toggle. Use with [checked] for one-way or [(checked)] for two-way binding. |
 | `disabled` | `boolean` | no | `false` | When true, the toggle is non-interactive and visually muted |
 | `size` | `'sm'\|'md'\|'lg'` | no | `'md'` | Visual size of the toggle control |
-| `color` | `'accent_color'\|'blue'\|'green'\|'red'\|'yellow'\|'purple'\|'gray'\|'custom'` | no | `'blue'` | Colour preset applied when the toggle is checked. Use 'custom' together with customColor for a hex override. |
+| `color` | `'accent_color'\|'blue'\|'green'\|'red'\|'yellow'\|'purple'\|'gray'\|'custom'` | no | `'accent_color'` | Colour preset applied when the toggle is checked. The exported `DEFAULT_TOGGLE_CONFIG` instead supplies `'blue'` when used explicitly. Use 'custom' together with customColor for a hex override. |
 | `customColor` | `string` | no | `''` | CSS hex or colour string applied when color is 'custom' (e.g. '#8b5cf6') |
 | `label` | `string` | no | `''` | Optional text label displayed next to the toggle control |
 | `labelPosition` | `'left'\|'right'` | no | `'right'` | Which side to render the label relative to the toggle |
