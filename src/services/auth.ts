@@ -41,7 +41,11 @@ export async function authenticate(request: FastifyRequest, reply: FastifyReply)
     return;
   }
 
-  if (request.body && typeof request.body === "object" && Object.hasOwn(request.body, "owner_id")) {
-    await reply.code(400).send({ error: "owner_id is derived from the access token" });
+  const body = request.body;
+  if (body && typeof body === "object") {
+    const identityField = ["owner_id", "created_by", "user_id"].find((field) => Object.hasOwn(body, field));
+    if (identityField) {
+      await reply.code(400).send({ error: `${identityField} is derived from the access token` });
+    }
   }
 }

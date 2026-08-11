@@ -38,6 +38,11 @@ test.after(() => rm(projectsRoot, { recursive: true, force: true }));
 test('requires HTML before Angular for page, modal, and tab revisions', () => {
   assert.equal(requiresRevisionHtml('new_page'), true);
   assert.equal(requiresRevisionHtml('modal'), true);
+  assert.equal(requiresRevisionHtml('modal', 'confirmation'), false);
+  assert.equal(requiresRevisionHtml('modal', 'success'), false);
+  assert.equal(requiresRevisionHtml('modal', 'error'), false);
+  assert.equal(requiresRevisionHtml('modal', 'loading'), false);
+  assert.equal(requiresRevisionHtml('modal', 'custom'), true);
   assert.equal(requiresRevisionHtml('tab'), true);
   assert.equal(requiresRevisionHtml('auto'), false);
 });

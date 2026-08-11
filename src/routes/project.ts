@@ -220,7 +220,15 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  app.get("/projects", async () => ({ projects: (await listProjects()).map(({ project_name, updated_at }) => ({ project_name, updated_at })) }));
+  app.get("/projects", async () => ({
+    projects: (await listProjects()).map(({ project_id, project_name, updated_at, project }) => ({
+      id: project_id,
+      name: project_name,
+      created_at: project.created_at,
+      updated_at,
+      created_by: project.created_by,
+    })),
+  }));
 
   app.get<{ Params: { projectName: string } }>("/project/:projectName/download", async (request, reply) => {
     const { projectName } = request.params;
@@ -597,7 +605,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
 
     const revisionId = randomUUID();
     const storedRevision = redactAttachmentUrls(revision);
-    const projectId = await createRevisionJob(projectName, revisionId, storedRevision as unknown as Record<string, unknown>);
+    const projectId = await createRevisionJob(projectName, revisionId, storedRevision as unknown as Record<string, unknown>, request.ownerId);
     const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
     await writeRevisionStatus(projectDir, { revision_id: revisionId, request: storedRevision as Revision, status: "processing" });
 

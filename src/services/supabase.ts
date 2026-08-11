@@ -29,12 +29,21 @@ type JobRow = {
   created_at: string;
   started_at: string | null;
   updated_at: string;
+  created_by: string | null;
+};
+
+type ProfileRow = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  department: string | null;
 };
 
 type ProjectRow = {
   id: string;
   owner_id: string | null;
   name: string;
+  created_at: string;
   current_artifact_prefix?: string | null;
   preview_status: "starting" | "ready" | "stopped" | "failed" | "expired";
   preview_base_url: string | null;
@@ -93,7 +102,7 @@ export async function createProject(name: string, ownerId: string, request?: Rec
     await query("jobs", {
       method: "POST",
       headers: { Prefer: "return=minimal" },
-      body: JSON.stringify({ id: jobId, project_id: projectId, kind: "create", request: request ?? null }),
+      body: JSON.stringify({ id: jobId, project_id: projectId, kind: "create", created_by: ownerId, request: request ?? null }),
     });
   } catch (error) {
     await query(`projects?id=eq.${projectId}`, { method: "DELETE" });
@@ -108,17 +117,18 @@ export async function createProject(name: string, ownerId: string, request?: Rec
  * @param {string} projectName - Project name.
  * @param {string} jobId - Revision job identifier.
  * @param {Record<string, unknown>} request - Revision request.
+ * @param {string} createdBy - Authenticated user identifier.
  * @returns {Promise<string>} Project identifier.
  *
  * @example
  * await createRevisionJob("marketing-site", "revision-id", { comments: [] });
  */
-export async function createRevisionJob(projectName: string, jobId: string, request: Record<string, unknown>): Promise<string> {
+export async function createRevisionJob(projectName: string, jobId: string, request: Record<string, unknown>, createdBy: string): Promise<string> {
   const project = await getProjectRow(projectName);
   await query("jobs", {
     method: "POST",
     headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ id: jobId, project_id: project.id, kind: "revision", stage: "angular", request }),
+    body: JSON.stringify({ id: jobId, project_id: project.id, kind: "revision", stage: "angular", created_by: createdBy, request }),
   });
   return project.id;
 }
@@ -322,7 +332,8 @@ export async function completeArtifact(projectName: string, jobId: string, artif
  */
 export async function listProjects(): Promise<ReturnType<typeof mapProject>[]> {
   const rows = await query<ProjectRow[]>("projects?select=*,jobs(*)&deleted_at=is.null&order=name.asc&jobs.order=created_at.asc");
-  return rows.map(mapProject);
+  const profiles = await getProfiles(rows.flatMap((project) => [project.owner_id, ...(project.jobs ?? []).map((job) => job.created_by)]));
+  return rows.map((project) => mapProject(project, profiles));
 }
 
 /**
@@ -336,7 +347,9 @@ export async function listProjects(): Promise<ReturnType<typeof mapProject>[]> {
  */
 export async function getProject(projectName: string): Promise<ReturnType<typeof mapProject> | null> {
   const rows = await query<ProjectRow[]>(`projects?select=*,jobs(*)&name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null&jobs.order=created_at.asc`);
-  return rows[0] ? mapProject(rows[0]) : null;
+  if (!rows[0]) return null;
+  const profiles = await getProfiles([rows[0].owner_id, ...(rows[0].jobs ?? []).map((job) => job.created_by)]);
+  return mapProject(rows[0], profiles);
 }
 
 async function getProjectRow(projectName: string): Promise<ProjectRow> {
@@ -361,7 +374,28 @@ function hourCeiling(hours: number): Date {
   return date;
 }
 
-function mapProject(project: ProjectRow) {
+async function getProfiles(ids: Array<string | null>): Promise<Map<string, ProfileRow>> {
+  const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
+  if (!uniqueIds.length) return new Map();
+  const rows = await query<ProfileRow[]>(`profiles?select=id,first_name,last_name,department&id=in.(${uniqueIds.join(",")})`);
+  return new Map(rows.map((profile) => [profile.id, profile]));
+}
+
+function creator(id: string | null, profiles: Map<string, ProfileRow>) {
+  if (!id) return null;
+  const profile = profiles.get(id);
+  return {
+    id,
+    ...(profile
+      ? {
+          name: `${profile.first_name} ${profile.last_name}`.trim(),
+          department: profile.department,
+        }
+      : { name: id, department: null }),
+  };
+}
+
+function mapProject(project: ProjectRow, profiles = new Map<string, ProfileRow>()) {
   const jobs = project.jobs ?? [];
   const createJob = jobs.filter((job) => job.kind === "create").at(-1);
   const statuses: Record<string, unknown> = { ...(createJob?.progress ?? {}) };
@@ -373,6 +407,7 @@ function mapProject(project: ProjectRow) {
     ...(job.summary ? { summary: job.summary } : {}),
     ...(job.error ? { error: job.error } : {}),
     updated_at: job.updated_at,
+    created_by: creator(job.created_by, profiles),
   }));
   if (revisions.length) statuses.revision = { request: revisions };
   if (project.preview_status !== "stopped") {
@@ -383,5 +418,24 @@ function mapProject(project: ProjectRow) {
       updated_at: project.updated_at,
     };
   }
-  return { project_id: project.id, project_name: project.name, updated_at: project.updated_at, statuses };
+  const projectCreator = creator(project.owner_id, profiles);
+  return {
+    project_id: project.id,
+    project_name: project.name,
+    updated_at: project.updated_at,
+    project: {
+      id: project.id,
+      name: project.name,
+      created_at: project.created_at,
+      created_by: projectCreator,
+    },
+    revisions: revisions.map((revision) => ({
+      ...revision,
+      id: revision.revision_id,
+      prompt: typeof (revision as Record<string, unknown>).prompt === "string" ? (revision as Record<string, unknown>).prompt : null,
+      created_at: jobs.find((job) => job.id === revision.revision_id)?.created_at ?? null,
+      created_by: revision.created_by,
+    })),
+    statuses,
+  };
 }
