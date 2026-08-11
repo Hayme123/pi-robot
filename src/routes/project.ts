@@ -14,9 +14,11 @@ import { getProjectDownloadUrl, getProjectFiles, persistProjectArtifact, renameP
 import { applyProjectRevision, classifyModal, defineProjectName, generateAngularProject, generateProjectHtml, generatePromptProject, type ModalKind } from "../services/pi.js";
 import { readProjectFiles } from "../services/project-files.js";
 import {
+  claimQueuedRevision,
   createProject,
   createRevisionJob,
   getArtifactJob,
+  listQueuedRevisionProjects,
   getProject,
   listProjects,
   softDeleteProject,
@@ -108,6 +110,23 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
   await stopActivePreviews();
   const runningProjects = new Map<string, Promise<RunningProject>>();
   const activeProjects = new Set<string>();
+  const activeRevisionProjects = new Set<string>();
+  const queuedRevisionInputs = new Map<string, Revision>();
+  const revisionSubmissions = new Map<string, Promise<void>>();
+  const serializeRevisionSubmission = async <T>(projectName: string, task: () => Promise<T>): Promise<T> => {
+    const previous = revisionSubmissions.get(projectName) ?? Promise.resolve();
+    let release!: () => void;
+    const lock = new Promise<void>((resolve) => { release = resolve; });
+    const current = previous.catch(() => {}).then(() => lock);
+    revisionSubmissions.set(projectName, current);
+    await previous.catch(() => {});
+    try {
+      return await task();
+    } finally {
+      release();
+      if (revisionSubmissions.get(projectName) === current) revisionSubmissions.delete(projectName);
+    }
+  };
   const tunnelPool: TunnelPoolEntry[] = [];
   const reservedPreviewPorts = new Set<number>();
   const maxTunnelPoolSize = 5;
@@ -193,9 +212,36 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     startAngularPreview(angularDir, log, claimTunnel, releasePreviewPort);
 
   const runningTests = process.env.NODE_ENV === "test" || Boolean(process.env.NODE_TEST_CONTEXT) || process.execArgv.includes("--test") || process.argv.some((arg) => arg.endsWith(".test.mjs") || arg.endsWith(".test.js"));
+  const runRevisionWorker = (projectName: string, projectId: string, initial?: { revisionId: string; revision: Revision; storedRevision: Revision }) => {
+    if (activeRevisionProjects.has(projectName)) return;
+    activeRevisionProjects.add(projectName);
+    let processed = false;
+    void (async () => {
+      const job = initial ?? await claimQueuedRevision(projectId).then((claimed) => {
+        if (!claimed || !claimed.request) return null;
+        const revision = queuedRevisionInputs.get(claimed.id) ?? parseRevision(claimed.request);
+        return revision ? { revisionId: claimed.id, revision, storedRevision: redactAttachmentUrls(revision) } : null;
+      });
+      if (!job) return;
+      processed = true;
+      try {
+        await processRevisionJob(projectName, job.revisionId, job.revision, job.storedRevision, app.log);
+      } finally {
+        queuedRevisionInputs.delete(job.revisionId);
+      }
+    })().catch((error) => app.log.error(error, "Queued project revision failed")).finally(() => {
+      activeRevisionProjects.delete(projectName);
+      if (processed) runRevisionWorker(projectName, projectId);
+    });
+  };
+
   if (!runningTests) {
     app.log.info({ maxTunnelPoolSize, tunnelCreationIntervalMs }, "Warming Quick Tunnel pool sequentially");
     void fillTunnelPool();
+    app.addHook("onReady", async () => {
+      const projects = await listQueuedRevisionProjects();
+      for (const project of projects) runRevisionWorker(project.projectName, project.projectId);
+    });
   }
 
   app.addHook("onClose", async () => {
@@ -591,99 +637,29 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
   app.post<{ Params: { projectName: string }; Body: unknown }>("/project/:projectName/revisions", { preHandler: authenticate }, async (request, reply) => {
     const { projectName } = request.params;
     const revision = parseRevision(request.body);
-    if (!isProjectName(projectName) || !revision) {
-      return reply.code(400).send({ error: "invalid_revision" });
-    }
-
-    const projectDir = path.join(config.projectsRoot, projectName);
-    const angularDir = path.join(projectDir, projectName);
-    try {
-      await access(path.join(angularDir, "angular.json"));
-    } catch {
-      if (!(await restoreProjectWorkspace(projectName, config.projectsRoot))) return reply.code(404).send({ error: "Project not found" });
-    }
+    if (!isProjectName(projectName) || !revision) return reply.code(400).send({ error: "invalid_revision" });
 
     const revisionId = randomUUID();
     const storedRevision = redactAttachmentUrls(revision);
-    const projectId = await createRevisionJob(projectName, revisionId, storedRevision as unknown as Record<string, unknown>, request.ownerId);
-    const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
-    await writeRevisionStatus(projectDir, { revision_id: revisionId, request: storedRevision as Revision, status: "processing" });
-
-    runProjectTask(projectName, activeProjects, async () => {
-      let htmlCost = 0;
-      try {
-        const topAttachment = revision.attachment_url
-          ? await downloadAttachment(revision.attachment_url, assetsDir, "prompt-attachment", request.log)
-          : undefined;
-        const frameResults = await Promise.all(revision.comments.map(async (comment, index) => {
-          if (!comment.figma_frame && !comment.attachment_url) return null;
-          const directory = path.join(assetsDir, String(index));
-          const attachment = comment.attachment_url
-            ? await downloadAttachment(comment.attachment_url, directory, "attachment", request.log)
-            : undefined;
-          if (comment.figma_frame) {
-            await downloadFigmaFrames(comment.figma_frame.project_id, [comment.figma_frame.node_id], directory, request.log);
-          }
-          const frameImagePath = path.join(directory, "frame.png");
-          const modalImagePath = attachment?.isImage ? attachment.path : await fileExists(frameImagePath) ? frameImagePath : undefined;
-          const modalKind = comment.interaction?.presentation === "modal" && modalImagePath
-            ? await classifyModal(modalImagePath, request.log)
-            : undefined;
-          if (!requiresRevisionHtml(comment.interaction?.presentation, modalKind)) {
-            return {
-              frame: {
-                commentId: comment.id ?? index,
-                directory,
-                presentation: comment.interaction?.presentation,
-                modalVariant: modalKind,
-                ...(attachment ? { attachmentPath: attachment.path } : {}),
-              },
-            };
-          }
-          const html = await generateProjectHtml(directory, angularDir, request.log, attachment);
-          htmlCost += html.cost;
-          return {
-            frame: {
-              commentId: comment.id ?? index,
-              directory,
-              presentation: comment.interaction?.presentation,
-              modalVariant: modalKind,
-              ...(attachment ? { attachmentPath: attachment.path } : {}),
-              htmlPath: path.join(directory, "index.html"),
-            },
-          };
-        }));
-        const completedFrames = frameResults.filter((result) => result !== null);
-        const figmaFrames = completedFrames.map(({ frame }) => frame);
-        await prepareAngularDependencies(angularDir, request.log);
-        const usage = await applyProjectRevision(angularDir, revision, figmaFrames, topAttachment, revision.thinking_level, request.log);
-        await writeRevisionStatus(projectDir, {
-          revision_id: revisionId,
-          request: storedRevision as Revision,
-          status: "completed",
-          cost: htmlCost + usage.cost,
-          context_length: usage.contextLength,
-          context_window: usage.contextWindow,
-          context_percent: usage.contextPercent,
-          summary: usage.summary,
-        });
-        await persistProject(projectName, revisionId, projectDir);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await writeRevisionStatus(projectDir, {
-          revision_id: revisionId,
-          request: storedRevision as Revision,
-          status: "failed",
-          ...(htmlCost ? { cost: htmlCost } : {}),
-          error: message,
-        });
-        app.log.error(error, `Project revision failed: ${projectName}`);
-        return;
-      }
-
+    queuedRevisionInputs.set(revisionId, revision);
+    let queued: { projectId: string; status: "processing" | "queued"; createdAt: string; updatedAt: string; createdBy: { id: string; name: string; department: string | null } };
+    try {
+      queued = await serializeRevisionSubmission(projectName, () =>
+        createRevisionJob(projectName, revisionId, storedRevision as unknown as Record<string, unknown>, request.ownerId),
+      );
+    } catch (error) {
+      queuedRevisionInputs.delete(revisionId);
+      if (error instanceof Error && error.message === "Project not found") return reply.code(404).send({ error: "Project not found" });
+      throw error;
+    }
+    if (queued.status === "processing") runRevisionWorker(projectName, queued.projectId, { revisionId, revision, storedRevision });
+    return reply.code(202).send({
+      revision_id: revisionId,
+      created_at: queued.createdAt,
+      updated_at: queued.updatedAt,
+      status: queued.status,
+      created_by: queued.createdBy,
     });
-
-    return reply.code(202).send(queuedResponse(projectName, projectId, revisionId));
   });
 
   app.post<{ Params: { projectName: string } }>("/project/:projectName/stop", { preHandler: authenticate }, async (request, reply) => {
@@ -792,7 +768,7 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     const project = await getProjectExpiry(projectName);
     if (!project || !isDueThisHour(project.local_expires_at)) return { status: "skipped" };
     if (!project.current_artifact_prefix) return reply.code(409).send({ error: "project_has_no_r2_artifact" });
-    if (activeProjects.has(projectName)) return reply.code(409).send({ error: "project_is_active" });
+    if (activeProjects.has(projectName) || activeRevisionProjects.has(projectName)) return reply.code(409).send({ error: "project_is_active" });
     await stopTrackedPreview(projectName, runningProjects);
     await stopPreview(projectName);
     const projectDir = path.join(config.projectsRoot, projectName);
@@ -806,6 +782,88 @@ const projectRoutes: FastifyPluginAsync = async (app) => {
     return { status: "deleted" };
   });
 };
+
+async function processRevisionJob(
+  projectName: string,
+  revisionId: string,
+  revision: Revision,
+  storedRevision: Revision,
+  log: FastifyBaseLogger,
+): Promise<void> {
+  const projectDir = path.join(config.projectsRoot, projectName);
+  let htmlCost = 0;
+  try {
+    const angularDir = (await restoreProjectWorkspace(projectName, config.projectsRoot)) ?? path.join(projectDir, projectName);
+    await access(path.join(angularDir, "angular.json"));
+    await writeRevisionStatus(projectDir, { revision_id: revisionId, request: storedRevision, status: "processing" });
+    const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
+    const topAttachment = revision.attachment_url
+      ? await downloadAttachment(revision.attachment_url, assetsDir, "prompt-attachment", log)
+      : undefined;
+    const frameResults = await Promise.all(revision.comments.map(async (comment, index) => {
+      if (!comment.figma_frame && !comment.attachment_url) return null;
+      const directory = path.join(assetsDir, String(index));
+      const attachment = comment.attachment_url
+        ? await downloadAttachment(comment.attachment_url, directory, "attachment", log)
+        : undefined;
+      if (comment.figma_frame) {
+        await downloadFigmaFrames(comment.figma_frame.project_id, [comment.figma_frame.node_id], directory, log);
+      }
+      const frameImagePath = path.join(directory, "frame.png");
+      const modalImagePath = attachment?.isImage ? attachment.path : await fileExists(frameImagePath) ? frameImagePath : undefined;
+      const modalKind = comment.interaction?.presentation === "modal" && modalImagePath
+        ? await classifyModal(modalImagePath, log)
+        : undefined;
+      if (!requiresRevisionHtml(comment.interaction?.presentation, modalKind)) {
+        return {
+          frame: {
+            commentId: comment.id ?? index,
+            directory,
+            presentation: comment.interaction?.presentation,
+            modalVariant: modalKind,
+            ...(attachment ? { attachmentPath: attachment.path } : {}),
+          },
+        };
+      }
+      const html = await generateProjectHtml(directory, angularDir, log, attachment);
+      htmlCost += html.cost;
+      return {
+        frame: {
+          commentId: comment.id ?? index,
+          directory,
+          presentation: comment.interaction?.presentation,
+          modalVariant: modalKind,
+          ...(attachment ? { attachmentPath: attachment.path } : {}),
+          htmlPath: path.join(directory, "index.html"),
+        },
+      };
+    }));
+    const figmaFrames = frameResults.filter((result) => result !== null).map(({ frame }) => frame);
+    await prepareAngularDependencies(angularDir, log);
+    const usage = await applyProjectRevision(angularDir, revision, figmaFrames, topAttachment, revision.thinking_level, log);
+    await persistProject(projectName, revisionId, projectDir);
+    await writeRevisionStatus(projectDir, {
+      revision_id: revisionId,
+      request: storedRevision,
+      status: "completed",
+      cost: htmlCost + usage.cost,
+      context_length: usage.contextLength,
+      context_window: usage.contextWindow,
+      context_percent: usage.contextPercent,
+      summary: usage.summary,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await writeRevisionStatus(projectDir, {
+      revision_id: revisionId,
+      request: storedRevision,
+      status: "failed",
+      ...(htmlCost ? { cost: htmlCost } : {}),
+      error: message,
+    });
+    log.error(error, `Project revision failed: ${projectName}`);
+  }
+}
 
 function isCronRequest(secret: string | string[] | undefined): boolean {
   return typeof secret === "string" && Boolean(config.expiryCronSecret) && secret === config.expiryCronSecret;

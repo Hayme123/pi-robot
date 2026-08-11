@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { config } from "../config.js";
 
 export type JobStatus = {
-  status: "processing" | "completed" | "failed";
+  status: "queued" | "processing" | "completed" | "failed";
   revision_id?: string;
   cost?: number;
   context_length?: number | null;
@@ -21,7 +21,7 @@ type JobRow = {
   project_id: string;
   kind: "create" | "revision";
   stage: string;
-  status: string;
+  status: "queued" | "processing" | "completed" | "failed";
   request: Record<string, unknown> | null;
   progress: Record<string, unknown>;
   summary: string | null;
@@ -31,6 +31,9 @@ type JobRow = {
   updated_at: string;
   created_by: string | null;
 };
+
+export type ResponsibleUser = { id: string; name: string; department: string | null };
+export type ClaimedRevisionJob = Pick<JobRow, "id" | "project_id" | "request">;
 
 type ProfileRow = {
   id: string;
@@ -118,19 +121,62 @@ export async function createProject(name: string, ownerId: string, request?: Rec
  * @param {string} jobId - Revision job identifier.
  * @param {Record<string, unknown>} request - Revision request.
  * @param {string} createdBy - Authenticated user identifier.
- * @returns {Promise<string>} Project identifier.
+ * @returns {Promise<{ projectId: string; status: "processing" | "queued"; createdAt: string; updatedAt: string; createdBy: ResponsibleUser }>} Revision metadata.
  *
  * @example
- * await createRevisionJob("marketing-site", "revision-id", { comments: [] });
+ * await createRevisionJob("marketing-site", "revision-id", { comments: [] }, "user-id");
  */
-export async function createRevisionJob(projectName: string, jobId: string, request: Record<string, unknown>, createdBy: string): Promise<string> {
+export async function createRevisionJob(
+  projectName: string,
+  jobId: string,
+  request: Record<string, unknown>,
+  createdBy: string,
+): Promise<{ projectId: string; status: "processing" | "queued"; createdAt: string; updatedAt: string; createdBy: ResponsibleUser }> {
   const project = await getProjectRow(projectName);
-  await query("jobs", {
+  const active = await query<Pick<JobRow, "id">[]>(`jobs?select=id&project_id=eq.${project.id}&kind=eq.revision&status=in.(processing,queued)&limit=1`);
+  const status = active.length ? "queued" : "processing";
+  const profile = (await getProfiles([createdBy])).get(createdBy);
+  const createdByUser = creator(createdBy, new Map(profile ? [[createdBy, profile]] : [])) ?? { id: createdBy, name: createdBy, department: null };
+  const rows = await query<JobRow[]>("jobs", {
     method: "POST",
-    headers: { Prefer: "return=minimal" },
-    body: JSON.stringify({ id: jobId, project_id: project.id, kind: "revision", stage: "angular", created_by: createdBy, request }),
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({
+      id: jobId,
+      project_id: project.id,
+      kind: "revision",
+      stage: "angular",
+      status,
+      created_by: createdBy,
+      request,
+      progress: { revision: { created_by: createdByUser } },
+    }),
   });
-  return project.id;
+  const job = rows[0];
+  if (!job) throw new Error("Revision job was not created");
+  return { projectId: project.id, status, createdAt: job.created_at, updatedAt: job.updated_at, createdBy: createdByUser };
+}
+
+/** Atomically claims the oldest queued revision when a project has no active revision. */
+export async function claimQueuedRevision(projectId: string): Promise<ClaimedRevisionJob | null> {
+  const active = await query<Pick<JobRow, "id">[]>(`jobs?select=id&project_id=eq.${projectId}&kind=eq.revision&status=eq.processing&limit=1`);
+  if (active.length) return null;
+  const queued = await query<ClaimedRevisionJob[]>(`jobs?select=id,project_id,request&project_id=eq.${projectId}&kind=eq.revision&status=eq.queued&order=created_at.asc,id.asc&limit=1`);
+  const job = queued[0];
+  if (!job) return null;
+  const now = new Date().toISOString();
+  const claimed = await query<ClaimedRevisionJob[]>(`jobs?id=eq.${job.id}&status=eq.queued`, {
+    method: "PATCH",
+    headers: { Prefer: "return=representation" },
+    body: JSON.stringify({ status: "processing", stage: "angular", started_at: now, completed_at: null, updated_at: now }),
+  });
+  return claimed[0] ?? null;
+}
+
+/** Lists projects that have queued revisions so a worker can recover them at startup. */
+export async function listQueuedRevisionProjects(): Promise<Array<{ projectId: string; projectName: string }>> {
+  const rows = await query<Array<{ project_id: string; projects: { name: string } | null }>>("jobs?select=project_id,projects!inner(name)&kind=eq.revision&status=eq.queued");
+  return [...new Map(rows.flatMap((row) => row.projects ? [[row.project_id, row.projects.name] as const] : [])).entries()]
+    .map(([projectId, projectName]) => ({ projectId, projectName }));
 }
 
 /**
@@ -331,7 +377,7 @@ export async function completeArtifact(projectName: string, jobId: string, artif
  * await listProjects();
  */
 export async function listProjects(): Promise<ReturnType<typeof mapProject>[]> {
-  const rows = await query<ProjectRow[]>("projects?select=*,jobs(*)&deleted_at=is.null&order=name.asc&jobs.order=created_at.asc");
+  const rows = await query<ProjectRow[]>("projects?select=*,jobs(*)&deleted_at=is.null&order=name.asc&jobs.order=created_at.asc,id.asc");
   const profiles = await getProfiles(rows.flatMap((project) => [project.owner_id, ...(project.jobs ?? []).map((job) => job.created_by)]));
   return rows.map((project) => mapProject(project, profiles));
 }
@@ -346,7 +392,7 @@ export async function listProjects(): Promise<ReturnType<typeof mapProject>[]> {
  * await getProject("marketing-site");
  */
 export async function getProject(projectName: string): Promise<ReturnType<typeof mapProject> | null> {
-  const rows = await query<ProjectRow[]>(`projects?select=*,jobs(*)&name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null&jobs.order=created_at.asc`);
+  const rows = await query<ProjectRow[]>(`projects?select=*,jobs(*)&name=eq.${encodeURIComponent(projectName)}&deleted_at=is.null&jobs.order=created_at.asc,id.asc`);
   if (!rows[0]) return null;
   const profiles = await getProfiles([rows[0].owner_id, ...(rows[0].jobs ?? []).map((job) => job.created_by)]);
   return mapProject(rows[0], profiles);
