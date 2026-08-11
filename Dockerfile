@@ -11,6 +11,7 @@ RUN npm ci && apt-get update && apt-get install -y --no-install-recommends unzip
 
 COPY tsconfig.json ./
 COPY src ./src
+COPY docs/openapi.yaml ./docs/openapi.yaml
 COPY scaffolds/frontend-scaffold.zip ./scaffolds/frontend-scaffold.zip
 RUN --mount=type=secret,id=npm_token mkdir -p /opt/angular-deps \
   && unzip -p ./scaffolds/frontend-scaffold.zip ai-coded-main/package.json > /opt/angular-deps/package.json \

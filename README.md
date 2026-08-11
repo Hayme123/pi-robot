@@ -35,7 +35,9 @@ R2 and Supabase remain the durable stores. Lightsail job workspaces are disposab
 
 ## API
 
-All endpoints except `/health` require `Authorization: Bearer $APP_API_KEY` when `APP_API_KEY` is configured.
+OpenAPI/Swagger documentation is available at [docs/openapi.yaml](docs/openapi.yaml). Import it into Swagger UI or another OpenAPI viewer.
+
+Protected endpoints require a Supabase `Authorization: Bearer <JWT>` token. The internal expiry endpoints use the `x-cron-secret` header instead.
 
 Set up a project scaffold and download its Figma files:
 

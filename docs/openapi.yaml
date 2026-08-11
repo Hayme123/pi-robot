@@ -1,0 +1,595 @@
+openapi: 3.0.3
+info:
+  title: Pi Frontend Builder API
+  version: 1.0.0
+  description: API for generating, revising, running, and inspecting frontend projects.
+servers:
+  - url: http://localhost:3000
+    description: Local development
+  - url: https://api.example.com
+    description: Public deployment
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+  - name: Projects
+  - name: Project
+  - name: Internal
+paths:
+  /health:
+    get:
+      tags: [Health]
+      summary: Check API health
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /projects:
+    get:
+      tags: [Projects]
+      summary: List projects
+      security: []
+      responses:
+        '200':
+          description: Projects ordered by name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects]
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectSummary'
+  /projects/run:
+    post:
+      tags: [Projects]
+      summary: Run all available Angular projects
+      responses:
+        '200':
+          description: Per-project launch results
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects]
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/RunResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /project:
+    post:
+      tags: [Project]
+      summary: Create project setup from Figma
+      description: Queues scaffold extraction and Figma asset download.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Queued'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /project/all:
+    post:
+      tags: [Project]
+      summary: Run the complete Figma-to-Angular pipeline
+      description: Queues setup, HTML generation, Angular generation, and preview launch in sequence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Queued'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /project/prompt:
+    post:
+      tags: [Project]
+      summary: Create and run a project from a prompt
+      description: Pi chooses an unused project name and queues Angular generation and preview launch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PromptProjectRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Queued'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /project/{projectName}:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    get:
+      tags: [Project]
+      summary: Get project metadata and job statuses
+      security: []
+      responses:
+        '200':
+          description: Project details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Project]
+      summary: Soft-delete a project
+      responses:
+        '200':
+          description: Project deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project_name, deleted_project_name, status]
+                properties:
+                  project_name: { type: string }
+                  deleted_project_name: { type: string }
+                  status: { type: string, enum: [deleted] }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /project/{projectName}/download:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    get:
+      tags: [Project]
+      summary: Download generated Angular source
+      security: []
+      responses:
+        '302':
+          description: Redirect to a temporary download URL
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /project/{projectName}/files:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    get:
+      tags: [Project]
+      summary: Get generated Angular files as a directory tree
+      description: Dependencies, build output, binary files, and .env files are omitted.
+      security: []
+      responses:
+        '200':
+          description: Project file tree
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project_name, files]
+                properties:
+                  project_name: { type: string }
+                  files:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FileEntry'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /project/{projectName}/html:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Project]
+      summary: Generate static HTML
+      description: Queues HTML generation for a project with prepared Figma reference files.
+      responses:
+        '202':
+          $ref: '#/components/responses/Processing'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Required project setup or Figma files were not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /project/{projectName}/angular:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Project]
+      summary: Generate Angular application
+      description: Queues Angular generation for a project with generated HTML and an Angular scaffold.
+      responses:
+        '202':
+          $ref: '#/components/responses/Processing'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Required project files were not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /project/{projectName}/revisions:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Project]
+      summary: Apply a revision to an Angular project
+      description: Queues a revision request containing comments and optional Figma frames or attachments.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RevisionRequest'
+      responses:
+        '202':
+          $ref: '#/components/responses/Queued'
+        '400':
+          description: Invalid project name or revision payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /project/{projectName}/run:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Project]
+      summary: Start an Angular preview
+      responses:
+        '200':
+          description: Public preview is running
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project_name, url]
+                properties:
+                  project_name: { type: string }
+                  url: { type: string, format: uri }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Built Angular project was not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /project/{projectName}/stop:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Project]
+      summary: Stop an Angular preview
+      responses:
+        '200':
+          description: Preview stopped
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [project_name, status]
+                properties:
+                  project_name: { type: string }
+                  status: { type: string, enum: [stopped] }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Project is not running
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /internal/project/{projectName}/expire-preview:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Internal]
+      summary: Expire a project preview
+      security:
+        - cronSecret: []
+      parameters:
+        - $ref: '#/components/parameters/CronSecret'
+      responses:
+        '200':
+          description: Preview expiration result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [skipped, stopped] }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /internal/project/{projectName}/expire-local:
+    parameters:
+      - $ref: '#/components/parameters/ProjectName'
+    post:
+      tags: [Internal]
+      summary: Remove an expired local project cache
+      security:
+        - cronSecret: []
+      parameters:
+        - $ref: '#/components/parameters/CronSecret'
+      responses:
+        '200':
+          description: Local cache expiration result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, enum: [skipped, deleted] }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Project is not eligible for local expiration
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase access token.
+    cronSecret:
+      type: apiKey
+      in: header
+      name: x-cron-secret
+  parameters:
+    ProjectName:
+      name: projectName
+      in: path
+      required: true
+      description: Project folder name; path separators are not allowed.
+      schema:
+        type: string
+        minLength: 1
+        pattern: '^[^\\/]+$'
+    CronSecret:
+      name: x-cron-secret
+      in: header
+      required: true
+      schema: { type: string }
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Project already exists
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Project or generated source was not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: Preview startup failed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Queued:
+      description: Background job queued
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/QueuedResponse' }
+    Processing:
+      description: Background job queued
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ProcessingResponse' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [ok] }
+    CreateProjectRequest:
+      type: object
+      additionalProperties: false
+      required: [project_name, figma_url, figma_image_url, file_key, node_ids]
+      properties:
+        project_name:
+          type: string
+          minLength: 1
+          description: Folder-safe project name.
+        figma_url: { type: string }
+        figma_image_url: { type: string }
+        file_key: { type: string }
+        node_ids:
+          type: array
+          items: { type: string }
+    PromptProjectRequest:
+      type: object
+      additionalProperties: false
+      required: [prompt]
+      properties:
+        prompt: { type: string, minLength: 1 }
+        attachment_url: { type: string, format: uri, pattern: '^https://' }
+    RevisionRequest:
+      type: object
+      required: [prompt, comments]
+      properties:
+        prompt:
+          type: string
+          nullable: true
+          description: Revision instruction, or null when comments contain the instruction.
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/RevisionComment'
+        thinking_level:
+          type: string
+          enum: [low, medium, high]
+          default: medium
+        attachment_url: { type: string, format: uri, pattern: '^https://' }
+    RevisionComment:
+      type: object
+      description: Comment object. The comment field is required; targeting fields are optional.
+      required: [comment]
+      properties:
+        id: { oneOf: [{ type: string }, { type: integer }] }
+        kind: { type: string }
+        comment: { type: string, minLength: 1 }
+        target:
+          type: object
+          additionalProperties: true
+          properties:
+            selector: { type: string }
+        figma_frame:
+          $ref: '#/components/schemas/FigmaFrame'
+        interaction:
+          $ref: '#/components/schemas/Interaction'
+        attachment_url: { type: string, format: uri, pattern: '^https://' }
+      additionalProperties: true
+    FigmaFrame:
+      type: object
+      required: [project_id, node_id]
+      properties:
+        project_id: { type: string }
+        node_id: { type: string }
+    Interaction:
+      type: object
+      required: [trigger, presentation]
+      properties:
+        trigger: { type: string, enum: [click] }
+        presentation: { type: string, enum: [auto, modal, tab, new_page, popover, inline] }
+    QueuedResponse:
+      type: object
+      required: [project_id, project_name, job_id, revision_id, status]
+      properties:
+        project_id: { type: string }
+        project_name: { type: string }
+        job_id: { type: string }
+        revision_id: { type: string }
+        status: { type: string, enum: [queued] }
+    ProcessingResponse:
+      type: object
+      required: [project_name, status]
+      properties:
+        project_name: { type: string }
+        status: { type: string, enum: [processing] }
+    ProjectSummary:
+      type: object
+      required: [id, name, created_at, updated_at, created_by]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        created_by:
+          nullable: true
+          $ref: '#/components/schemas/Creator'
+    Project:
+      type: object
+      required: [project_id, project_name, updated_at, project, revisions, statuses]
+      properties:
+        project_id: { type: string }
+        project_name: { type: string }
+        updated_at: { type: string, format: date-time }
+        project:
+          type: object
+          properties:
+            id: { type: string }
+            name: { type: string }
+            created_at: { type: string, format: date-time }
+            created_by:
+              nullable: true
+              $ref: '#/components/schemas/Creator'
+        revisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        statuses:
+          type: object
+          description: Job status objects keyed by pipeline stage.
+          additionalProperties: true
+    Creator:
+      type: object
+      required: [id, name, department]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        department:
+          type: string
+          nullable: true
+    FileEntry:
+      type: object
+      required: [name, path, type]
+      properties:
+        name: { type: string }
+        path: { type: string }
+        type: { type: string, enum: [file, directory] }
+        content: { type: string }
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileEntry'
+    RunResult:
+      type: object
+      required: [project_name, status]
+      properties:
+        project_name: { type: string }
+        status: { type: string, enum: [running, skipped, failed] }
+        url: { type: string, format: uri }
+        error: { type: string }
