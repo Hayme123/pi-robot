@@ -109,9 +109,9 @@ create table public.jobs (
   updated_at timestamptz not null default now()
 );
 
-create unique index one_active_job_per_project
-  on public.jobs (project_id)
-  where status in ('queued', 'processing');
+create index jobs_pending_revision_queue_idx
+  on public.jobs (project_id, created_at)
+  where kind = 'revision' and status = 'queued';
 
 create index jobs_by_project_created_at
   on public.jobs (project_id, created_at desc);
@@ -125,7 +125,7 @@ create index jobs_by_project_created_at
 | `stage` | Current pipeline stage. |
 | `status` | Durable job state. |
 | `request` | Prompt, comments, Figma references, and thinking level. |
-| `progress` | Per-stage status, cost, and timestamp data used by the existing frontend stage cards. |
+| `progress` | Per-stage status, cost, timestamp, and revision metadata used by the existing frontend stage cards. Revision payloads include `progress.revision.created_by` as `{ id, name, department }`, so Supabase Realtime consumers receive the responsible user without a profile join. |
 | `artifact_prefix` | Immutable R2 output prefix produced by a successful job. |
 | `summary` | Pi's completion summary. |
 | `error` | Safe failure message. |

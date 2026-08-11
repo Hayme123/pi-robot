@@ -257,7 +257,10 @@ paths:
               $ref: '#/components/schemas/RevisionRequest'
       responses:
         '202':
-          $ref: '#/components/responses/Queued'
+          description: Revision accepted for processing
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RevisionQueuedResponse' }
         '400':
           description: Invalid project name or revision payload
           content:
@@ -528,6 +531,23 @@ components:
       properties:
         project_name: { type: string }
         status: { type: string, enum: [processing] }
+    RevisionQueuedResponse:
+      type: object
+      required: [revision_id, created_at, updated_at, status, created_by]
+      properties:
+        revision_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        status: { type: string, enum: [queued, processing] }
+        created_by:
+          $ref: '#/components/schemas/ResponsibleUser'
+    ResponsibleUser:
+      type: object
+      required: [id, name, department]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        department: { type: string, nullable: true }
     ProjectSummary:
       type: object
       required: [id, name, created_at, updated_at, created_by]
