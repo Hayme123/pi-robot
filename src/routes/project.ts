@@ -793,7 +793,13 @@ async function processRevisionJob(
   const projectDir = path.join(config.projectsRoot, projectName);
   let htmlCost = 0;
   try {
-    const angularDir = (await restoreProjectWorkspace(projectName, config.projectsRoot)) ?? path.join(projectDir, projectName);
+    let angularDir = path.join(projectDir, projectName);
+    try {
+      await access(projectDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      angularDir = (await restoreProjectWorkspace(projectName, config.projectsRoot)) ?? angularDir;
+    }
     await access(path.join(angularDir, "angular.json"));
     await writeRevisionStatus(projectDir, { revision_id: revisionId, request: storedRevision, status: "processing" });
     const assetsDir = path.join(projectDir, ".revision-assets", revisionId);
